@@ -3,6 +3,7 @@ import numpy as np
 
 st.set_page_config(page_title="Multiphoton Simulator (Quantum Baseline)", layout="wide")
 st.title("Multiphoton Entanglement Simulator — Quantum Baseline (4-photon)")
+st.image("assets/scheme.png", use_container_width=True)
 
 # =========================================================
 # 1) RNG
