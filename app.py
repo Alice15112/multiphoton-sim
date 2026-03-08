@@ -43,6 +43,12 @@ if "scheme_params" not in st.session_state:
             "bs_left": {"loss": 0.02},
             "bs_right": {"loss": 0.02},
         }
+
+        "source": {
+        "message": "Hello Bob",
+        "num_packets": 2000,
+        "pair_generation_efficiency": 0.95
+},
     }
 
 params = st.session_state.scheme_params
@@ -191,6 +197,34 @@ elif selected.startswith("bs"):
 
     params["beam_splitters"][selected]["loss"] = loss
 
+elif selected == "source":
+
+    st.markdown("### source")
+
+    message = st.text_input(
+        "Message Alice sends",
+        value=params["source"]["message"]
+    )
+
+    num_packets = st.slider(
+        "Number of photon packets",
+        100,
+        20000,
+        params["source"]["num_packets"],
+        100
+    )
+
+    pair_generation_efficiency = st.slider(
+        "Pair generation efficiency",
+        0.0,
+        1.0,
+        params["source"]["pair_generation_efficiency"],
+        0.01
+    )
+
+    params["source"]["message"] = message
+    params["source"]["num_packets"] = num_packets
+    params["source"]["pair_generation_efficiency"] = pair_generation_efficiency
 
 st.divider()
 
@@ -211,18 +245,8 @@ st.divider()
 
 st.subheader("Simulation")
 
-message = st.text_input(
-    "Message Alice sends",
-    value="Hello Bob"
-)
-
-num_packets = st.slider(
-    "Number of photon packets",
-    100,
-    20000,
-    2000,
-    100
-)
+message = params["source"]["message"]
+num_packets = params["source"]["num_packets"]
 
 if st.button("Run simulation"):
 
