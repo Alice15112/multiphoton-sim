@@ -39,6 +39,12 @@ if "scheme_params" not in st.session_state:
             "detector_3": {"eta": 0.85, "dark": 0.0},
             "detector_4": {"eta": 0.85, "dark": 0.0},
         },
+        "pr": {
+            "pr_1": {"angle": 0.0, "error": 0.0},
+            "pr_2": {"angle": 0.0, "error": 0.0},
+            "pr_3": {"angle": 0.0, "error": 0.0},
+            "pr_4": {"angle": 0.0, "error": 0.0},
+        },
         "beam_splitters": {
             "bs_left": {"loss": 0.02},
             "bs_right": {"loss": 0.02},
@@ -60,15 +66,20 @@ params = st.session_state.scheme_params
 
 CLICK_ZONES = {
 
-    "channel_1": {"x1": 640, "x2": 670, "y1": 73, "y2": 134},
-    "channel_2": {"x1": 640, "x2": 670, "y1": 281, "y2": 330},
-    "channel_3": {"x1": 640, "x2": 670, "y1": 230, "y2": 300},
-    "channel_4": {"x1": 640, "x2": 670, "y1": 367, "y2": 421},
+    "channel_1": {"x1": 366, "x2": 630, "y1": 91, "y2": 129},
+    "channel_2": {"x1": 582, "x2": 640, "y1": 205, "y2": 240},
+    "channel_3": {"x1": 582, "x2": 640, "y1": 260, "y2": 303},
+    "channel_4": {"x1": 366, "x2": 630, "y1": 367, "y2": 421},
 
     "detector_1": {"x1": 822, "x2": 918, "y1": 60, "y2": 150},
     "detector_2": {"x1": 822, "x2": 918, "y1": 150, "y2": 250},
     "detector_3": {"x1": 822, "x2": 918, "y1": 250, "y2": 310},
-    "detector_4": {"x1": 822, "x2": 918, "y1": 350, "y2": 450},
+    "detector_4": {"x1": 822, "x2": 918, "y1": 380, "y2": 410},
+
+    "PR_1": {"x1": 640, "x2": 670, "y1": 73, "y2": 134},
+    "PR_2": {"x1": 640, "x2": 670, "y1": 281, "y2": 330},
+    "PR_3": {"x1": 640, "x2": 670, "y1": 230, "y2": 300},
+    "PR_4": {"x1": 640, "x2": 670, "y1": 367, "y2": 421},
 
     "bs_left": {"x1": 87, "x2": 140, "y1": 236, "y2": 265},
     "bs_right": {"x1": 526, "x2": 600, "y1": 239, "y2": 257},
@@ -178,7 +189,29 @@ elif selected.startswith("detector"):
     params["detectors"][selected]["eta"] = eta
     params["detectors"][selected]["dark"] = dark
 
+elif selected.startswith("pr"):
 
+    st.markdown(f"### {selected}")
+
+    angle = st.slider(
+        "Polarization rotation angle",
+        -180.0,
+        180.0,
+        params["pr"][selected]["angle"],
+        1.0
+    )
+
+    error = st.slider(
+        "Rotation error",
+        0.0,
+        0.2,
+        params["pr"][selected]["error"],
+        0.01
+    )
+
+    params["pr"][selected]["angle"] = angle
+    params["pr"][selected]["error"] = error
+    
 # ------------------------------------------------------------
 # BEAM SPLITTER SETTINGS
 # ------------------------------------------------------------
