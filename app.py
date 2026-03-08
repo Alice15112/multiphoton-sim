@@ -42,7 +42,7 @@ if "scheme_params" not in st.session_state:
         "beam_splitters": {
             "bs_left": {"loss": 0.02},
             "bs_right": {"loss": 0.02},
-        }
+        },
 
         "source": {
         "message": "Hello Bob",
