@@ -106,183 +106,159 @@ def detect_clicked_zone(coords, zones):
 # Display scheme
 # ============================================================
 
-# ============================================================
-# Display scheme
-# ============================================================
+with left_col:
+    st.subheader("Experimental Scheme")
 
-st.subheader("Experimental Scheme")
+    def draw_highlight_on_scheme(image: Image.Image, selected: str, zones: dict) -> Image.Image:
+        highlighted = image.copy()
+        draw = ImageDraw.Draw(highlighted)
 
-def draw_highlight_on_scheme(image: Image.Image, selected: str, zones: dict) -> Image.Image:
-    """
-    Draw a rectangle around the selected element on the scheme.
-    Returns a copy of the image with highlighting.
-    """
-    highlighted = image.copy()
-    draw = ImageDraw.Draw(highlighted)
+        if selected in zones:
+            zone = zones[selected]
+            x1, y1, x2, y2 = zone["x1"], zone["y1"], zone["x2"], zone["y2"]
 
-    if selected in zones:
-        zone = zones[selected]
-        x1, y1, x2, y2 = zone["x1"], zone["y1"], zone["x2"], zone["y2"]
+            draw.rectangle([x1, y1, x2, y2], outline="red", width=4)
+            draw.rectangle([x1 + 2, y1 + 2, x2 - 2, y2 - 2], outline="yellow", width=2)
 
-        draw.rectangle([x1, y1, x2, y2], outline="red", width=4)
-        draw.rectangle([x1 + 2, y1 + 2, x2 - 2, y2 - 2], outline="yellow", width=2)
+        return highlighted
 
-    return highlighted
+    base_image = Image.open("assets/scheme.png")
 
-base_image = Image.open("assets/scheme.png")
+    display_image = draw_highlight_on_scheme(
+        base_image,
+        st.session_state.selected_element,
+        CLICK_ZONES
+    )
 
-display_image = draw_highlight_on_scheme(
-    base_image,
-    st.session_state.selected_element,
-    CLICK_ZONES
-)
+    coords = streamlit_image_coordinates(
+        display_image,
+        key="scheme"
+    )
 
-coords = streamlit_image_coordinates(
-    display_image,
-    key="scheme"
-)
+    clicked_zone = detect_clicked_zone(coords, CLICK_ZONES)
 
-clicked_zone = detect_clicked_zone(coords, CLICK_ZONES)
+    if clicked_zone is not None:
+        st.session_state.selected_element = clicked_zone
+        st.rerun()
 
-if clicked_zone is not None:
-    st.session_state.selected_element = clicked_zone
-    st.rerun()
+    selected = st.session_state.selected_element
 
-selected = st.session_state.selected_element
-
-st.caption(f"Clicked coordinates: {coords}")
-st.caption(f"Selected element: {selected}")
+    st.caption(f"Clicked coordinates: {coords}")
+    st.caption(f"Selected element: {selected}")
 
 # ============================================================
 # Settings panel
 # ============================================================
 
-st.subheader("Element Settings")
+with right_col:
+    st.subheader("Element Settings")
 
-if selected is None:
+    if selected is None:
+        st.info("Click any element on the scheme to configure it.")
 
-    st.info("Click any element on the scheme to configure it.")
+    elif selected == "source":
+        st.markdown("### Source S")
 
-# ------------------------------------------------------------
-# CHANNEL SETTINGS
-# ------------------------------------------------------------
+        message = st.text_input(
+            "Message Alice sends",
+            value=params["source"]["message"]
+        )
 
-elif selected.startswith("channel"):
+        num_packets = st.slider(
+            "Number of photon packets",
+            100,
+            20000,
+            params["source"]["num_packets"],
+            100
+        )
 
-    st.markdown(f"### {selected}")
+        pair_generation_efficiency = st.slider(
+            "Pair generation efficiency",
+            0.0,
+            1.0,
+            params["source"]["pair_generation_efficiency"],
+            0.01
+        )
 
-    eve = st.checkbox(
-        "Eve taps this channel",
-        value=params["channels"][selected]["eve"]
-    )
+        params["source"]["message"] = message
+        params["source"]["num_packets"] = num_packets
+        params["source"]["pair_generation_efficiency"] = pair_generation_efficiency
 
-    loss = st.slider(
-        "Channel loss",
-        0.0,
-        1.0,
-        params["channels"][selected]["loss"],
-        0.01
-    )
+    elif selected.startswith("channel"):
+        st.markdown(f"### {selected}")
 
-    params["channels"][selected]["eve"] = eve
-    params["channels"][selected]["loss"] = loss
+        eve = st.checkbox(
+            "Eve taps this channel",
+            value=params["channels"][selected]["eve"]
+        )
 
-# ------------------------------------------------------------
-# DETECTOR SETTINGS
-# ------------------------------------------------------------
+        loss = st.slider(
+            "Channel loss",
+            0.0,
+            1.0,
+            params["channels"][selected]["loss"],
+            0.01
+        )
 
-elif selected.startswith("detector"):
+        params["channels"][selected]["eve"] = eve
+        params["channels"][selected]["loss"] = loss
 
-    st.markdown(f"### {selected}")
+    elif selected.startswith("pr"):
+        st.markdown(f"### {selected}")
 
-    eta = st.slider(
-        "Detector efficiency η",
-        0.0,
-        1.0,
-        params["detectors"][selected]["eta"],
-        0.01
-    )
+        angle = st.slider(
+            "Polarization rotation angle",
+            -180.0,
+            180.0,
+            params["pr"][selected]["angle"],
+            1.0
+        )
 
-    dark = st.slider(
-        "Dark count probability",
-        0.0,
-        0.2,
-        params["detectors"][selected]["dark"],
-        0.001
-    )
+        error = st.slider(
+            "Rotation error",
+            0.0,
+            0.2,
+            params["pr"][selected]["error"],
+            0.01
+        )
 
-    params["detectors"][selected]["eta"] = eta
-    params["detectors"][selected]["dark"] = dark
+        params["pr"][selected]["angle"] = angle
+        params["pr"][selected]["error"] = error
 
-elif selected.startswith("pr"):
+    elif selected.startswith("detector"):
+        st.markdown(f"### {selected}")
 
-    st.markdown(f"### {selected}")
+        eta = st.slider(
+            "Detector efficiency η",
+            0.0,
+            1.0,
+            params["detectors"][selected]["eta"],
+            0.01
+        )
 
-    angle = st.slider(
-        "Polarization rotation angle",
-        -180.0,
-        180.0,
-        params["pr"][selected]["angle"],
-        1.0
-    )
+        dark = st.slider(
+            "Dark count probability",
+            0.0,
+            0.2,
+            params["detectors"][selected]["dark"],
+            0.001
+        )
 
-    error = st.slider(
-        "Rotation error",
-        0.0,
-        0.2,
-        params["pr"][selected]["error"],
-        0.01
-    )
+        params["detectors"][selected]["eta"] = eta
+        params["detectors"][selected]["dark"] = dark
 
-    params["pr"][selected]["angle"] = angle
-    params["pr"][selected]["error"] = error
-    
-# ------------------------------------------------------------
-# BEAM SPLITTER SETTINGS
-# ------------------------------------------------------------
+    elif selected.startswith("bs"):
+        st.markdown(f"### {selected}")
 
-elif selected.startswith("bs"):
+        loss = st.slider(
+            "Beam splitter loss",
+            0.0,
+            1.0,
+            params["beam_splitters"][selected]["loss"],
+            0.01
+        )
 
-    st.markdown(f"### {selected}")
-
-    loss = st.slider(
-        "Beam splitter loss",
-        0.0,
-        1.0,
-        params["beam_splitters"][selected]["loss"],
-        0.01
-    )
-
-    params["beam_splitters"][selected]["loss"] = loss
-
-elif selected == "source":
-
-    st.markdown("### source")
-
-    message = st.text_input(
-        "Message Alice sends",
-        value=params["source"]["message"]
-    )
-
-    num_packets = st.slider(
-        "Number of photon packets",
-        100,
-        20000,
-        params["source"]["num_packets"],
-        100
-    )
-
-    pair_generation_efficiency = st.slider(
-        "Pair generation efficiency",
-        0.0,
-        1.0,
-        params["source"]["pair_generation_efficiency"],
-        0.01
-    )
-
-    params["source"]["message"] = message
-    params["source"]["num_packets"] = num_packets
-    params["source"]["pair_generation_efficiency"] = pair_generation_efficiency
+        params["beam_splitters"][selected]["loss"] = loss
 
 st.divider()
 
