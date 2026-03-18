@@ -102,6 +102,9 @@ def detect_clicked_zone(coords, zones):
 
     return None
 
+# ============================================================
+# Display scheme
+# ============================================================
 
 # ============================================================
 # Display scheme
@@ -109,10 +112,33 @@ def detect_clicked_zone(coords, zones):
 
 st.subheader("Experimental Scheme")
 
-image = Image.open("assets/scheme.png")
+def draw_highlight_on_scheme(image: Image.Image, selected: str, zones: dict) -> Image.Image:
+    """
+    Draw a rectangle around the selected element on the scheme.
+    Returns a copy of the image with highlighting.
+    """
+    highlighted = image.copy()
+    draw = ImageDraw.Draw(highlighted)
+
+    if selected in zones:
+        zone = zones[selected]
+        x1, y1, x2, y2 = zone["x1"], zone["y1"], zone["x2"], zone["y2"]
+
+        draw.rectangle([x1, y1, x2, y2], outline="red", width=4)
+        draw.rectangle([x1 + 2, y1 + 2, x2 - 2, y2 - 2], outline="yellow", width=2)
+
+    return highlighted
+
+base_image = Image.open("assets/scheme.png")
+
+display_image = draw_highlight_on_scheme(
+    base_image,
+    st.session_state.selected_element,
+    CLICK_ZONES
+)
 
 coords = streamlit_image_coordinates(
-    image,
+    display_image,
     key="scheme"
 )
 
@@ -120,13 +146,12 @@ clicked_zone = detect_clicked_zone(coords, CLICK_ZONES)
 
 if clicked_zone is not None:
     st.session_state.selected_element = clicked_zone
+    st.rerun()
 
 selected = st.session_state.selected_element
 
 st.caption(f"Clicked coordinates: {coords}")
 st.caption(f"Selected element: {selected}")
-
-st.divider()
 
 # ============================================================
 # Settings panel
