@@ -27,17 +27,16 @@ if "selected_element" not in st.session_state:
 
 if "scheme_params" not in st.session_state:
     st.session_state.scheme_params = {
+        "source": {
+            "message": "Hello Bob",
+            "num_packets": 2000,
+            "pair_generation_efficiency": 0.95
+        },
         "channels": {
             "channel_1": {"loss": 0.05, "eve": False},
             "channel_2": {"loss": 0.05, "eve": False},
             "channel_3": {"loss": 0.05, "eve": False},
             "channel_4": {"loss": 0.05, "eve": False},
-        },
-        "detectors": {
-            "detector_1": {"eta": 0.85, "dark": 0.0},
-            "detector_2": {"eta": 0.85, "dark": 0.0},
-            "detector_3": {"eta": 0.85, "dark": 0.0},
-            "detector_4": {"eta": 0.85, "dark": 0.0},
         },
         "pr": {
             "pr_1": {"angle": 0.0, "error": 0.0},
@@ -45,19 +44,20 @@ if "scheme_params" not in st.session_state:
             "pr_3": {"angle": 0.0, "error": 0.0},
             "pr_4": {"angle": 0.0, "error": 0.0},
         },
+        "detectors": {
+            "detector_1": {"eta": 0.85, "dark": 0.0},
+            "detector_2": {"eta": 0.85, "dark": 0.0},
+            "detector_3": {"eta": 0.85, "dark": 0.0},
+            "detector_4": {"eta": 0.85, "dark": 0.0},
+        },
         "beam_splitters": {
             "bs_left": {"loss": 0.02},
             "bs_right": {"loss": 0.02},
-        },
-
-        "source": {
-        "message": "Hello Bob",
-        "num_packets": 2000,
-        "pair_generation_efficiency": 0.95
-},
+        }
     }
 
 params = st.session_state.scheme_params
+left_col, right_col = st.columns([2, 1])
 
 
 # ============================================================
@@ -76,10 +76,10 @@ CLICK_ZONES = {
     "detector_3": {"x1": 822, "x2": 918, "y1": 250, "y2": 310},
     "detector_4": {"x1": 822, "x2": 918, "y1": 380, "y2": 410},
 
-    "PR_1": {"x1": 640, "x2": 670, "y1": 73, "y2": 134},
-    "PR_2": {"x1": 640, "x2": 670, "y1": 281, "y2": 330},
-    "PR_3": {"x1": 640, "x2": 670, "y1": 230, "y2": 300},
-    "PR_4": {"x1": 640, "x2": 670, "y1": 367, "y2": 421},
+    "pr_1": {"x1": 640, "x2": 670, "y1": 73, "y2": 134},
+    "pr_2": {"x1": 640, "x2": 670, "y1": 181, "y2": 240},
+    "pr_3": {"x1": 640, "x2": 670, "y1": 240, "y2": 300},
+    "pr_4": {"x1": 640, "x2": 670, "y1": 367, "y2": 421},
 
     "bs_left": {"x1": 87, "x2": 140, "y1": 236, "y2": 265},
     "bs_right": {"x1": 526, "x2": 600, "y1": 239, "y2": 257},
