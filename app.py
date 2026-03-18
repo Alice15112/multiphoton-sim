@@ -133,7 +133,7 @@ with left_col:
     coords = streamlit_image_coordinates(
     display_image,
     key="scheme",
-    width=900
+    width=1000
     )
 
     clicked_zone = detect_clicked_zone(coords, CLICK_ZONES)
