@@ -30,13 +30,14 @@ if "scheme_params" not in st.session_state:
         "source": {
             "message": "Hello Bob",
             "num_packets": 2000,
-            "pair_generation_efficiency": 0.95
+            "pair_generation_efficiency": 0.95,
+            "state_angle": 0.0
         },
         "channels": {
-            "channel_1": {"loss": 0.05, "eve": False},
-            "channel_2": {"loss": 0.05, "eve": False},
-            "channel_3": {"loss": 0.05, "eve": False},
-            "channel_4": {"loss": 0.05, "eve": False},
+            "channel_1": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15},
+            "channel_2": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15},
+            "channel_3": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15},
+            "channel_4": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15},
         },
         "pr": {
             "pr_1": {"angle": 0.0, "error": 0.0},
@@ -181,9 +182,18 @@ with right_col:
             0.01
         )
 
+        state_angle = st.slider(
+            "Source polarization angle",
+            -180.0,
+            180.0,
+            params["source"]["state_angle"],
+            1.0
+        )
+
         params["source"]["message"] = message
         params["source"]["num_packets"] = num_packets
         params["source"]["pair_generation_efficiency"] = pair_generation_efficiency
+        params["source"]["state_angle"] = state_angle
 
     elif selected.startswith("channel"):
         st.markdown(f"### {selected}")
@@ -288,56 +298,74 @@ def run_simple_simulation(params):
     message = params["source"]["message"]
     num_packets = params["source"]["num_packets"]
     pair_eff = params["source"]["pair_generation_efficiency"]
+    state_angle = params["source"]["state_angle"]
+
+    transmitted = 0
+    detected = 0
+    errors = 0
 
     active_eve_channels = [
         ch for ch, v in params["channels"].items()
         if v["eve"]
     ]
 
-    # Средние потери по каналам
-    channel_losses = [v["loss"] for v in params["channels"].values()]
-    avg_channel_loss = sum(channel_losses) / len(channel_losses)
-
-    # Средняя эффективность детекторов
-    detector_etas = [v["eta"] for v in params["detectors"].values()]
-    avg_eta = sum(detector_etas) / len(detector_etas)
-
-    # Средний dark count
-    detector_dark = [v["dark"] for v in params["detectors"].values()]
-    avg_dark = sum(detector_dark) / len(detector_dark)
-
-    transmitted = 0
-    detected = 0
-    errors = 0
+    channel_names = ["channel_1", "channel_2", "channel_3", "channel_4"]
+    pr_names = ["pr_1", "pr_2", "pr_3", "pr_4"]
+    detector_names = ["detector_1", "detector_2", "detector_3", "detector_4"]
 
     for _ in range(num_packets):
-        # 1. Источник вообще сработал?
+        # 1. Source works?
         if random.random() > pair_eff:
             continue
 
         transmitted += 1
 
-        # 2. Канальные потери
-        if random.random() < avg_channel_loss:
-            continue
+        packet_detected = False
+        packet_error = False
 
-        # 3. Детектор увидел?
-        if random.random() > avg_eta:
-            continue
+        for channel_name, pr_name, detector_name in zip(channel_names, pr_names, detector_names):
+            channel = params["channels"][channel_name]
+            pr = params["pr"][pr_name]
+            detector = params["detectors"][detector_name]
 
-        detected += 1
+            # 2. Channel loss
+            if random.random() < channel["loss"]:
+                continue
 
-        # 4. Ошибка из-за dark counts
-        error_probability = avg_dark
+            # 3. Quantum probability from source state + PR angle
+            p_quantum = quantum_measurement_probability(
+                state_angle_deg=state_angle,
+                pr_angle_deg=pr["angle"],
+                pr_error=pr["error"]
+            )
 
-        # 5. Ошибка из-за Евы
-        for ch in active_eve_channels:
-            error_probability += params["channels"][ch]["eve_disturbance"]
+            # 4. Eve adds disturbance by increasing error chance
+            eve_disturbance = channel.get("eve_disturbance", 0.0) if channel["eve"] else 0.0
 
-        error_probability = min(error_probability, 1.0)
+            # 5. Detector click probability combines:
+            # quantum probability * detector efficiency
+            p_click = p_quantum * detector["eta"]
 
-        if random.random() < error_probability:
-            errors += 1
+            click = random.random() < p_click
+
+            # dark count if no click
+            if not click and random.random() < detector["dark"]:
+                click = True
+
+            if click:
+                packet_detected = True
+
+                # error if Eve disturbed or if basis mismatch is strong
+                basis_error = 1.0 - p_quantum
+                total_error_probability = min(1.0, basis_error + eve_disturbance)
+
+                if random.random() < total_error_probability:
+                    packet_error = True
+
+        if packet_detected:
+            detected += 1
+            if packet_error:
+                errors += 1
 
     success_rate = detected / num_packets if num_packets else 0.0
     qber = errors / detected if detected else 0.0
@@ -351,7 +379,24 @@ def run_simple_simulation(params):
         "success_rate": success_rate,
         "qber": qber,
         "eve_channels": active_eve_channels,
+        "state_angle": state_angle,
     }
+
+import math
+import random
+
+def quantum_measurement_probability(state_angle_deg: float, pr_angle_deg: float, pr_error: float) -> float:
+    """
+    Quantum measurement probability via Malus-like law:
+    P = cos^2(theta_state - theta_PR_effective)
+    """
+    effective_pr_angle = pr_angle_deg + random.uniform(-pr_error * 180.0, pr_error * 180.0)
+
+    angle_diff_rad = math.radians(state_angle_deg - effective_pr_angle)
+    probability = math.cos(angle_diff_rad) ** 2
+
+    return max(0.0, min(1.0, probability))
+    
 # ============================================================
 # Simulation block placeholder
 # ============================================================
