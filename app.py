@@ -200,9 +200,17 @@ with right_col:
             params["channels"][selected]["loss"],
             0.01
         )
+        eve_disturbance = st.slider(
+            "Eve disturbance probability",
+             0.0,
+             1.0,
+            params["channels"][selected]["eve_disturbance"],
+            0.01
+        )
 
         params["channels"][selected]["eve"] = eve
         params["channels"][selected]["loss"] = loss
+        params["channels"][selected]["eve_disturbance"] = eve_disturbance
 
     elif selected.startswith("pr"):
         st.markdown(f"### {selected}")
@@ -274,27 +282,95 @@ st.json(params)
 
 st.divider()
 
+import random
+
+def run_simple_simulation(params):
+    message = params["source"]["message"]
+    num_packets = params["source"]["num_packets"]
+    pair_eff = params["source"]["pair_generation_efficiency"]
+
+    active_eve_channels = [
+        ch for ch, v in params["channels"].items()
+        if v["eve"]
+    ]
+
+    # Средние потери по каналам
+    channel_losses = [v["loss"] for v in params["channels"].values()]
+    avg_channel_loss = sum(channel_losses) / len(channel_losses)
+
+    # Средняя эффективность детекторов
+    detector_etas = [v["eta"] for v in params["detectors"].values()]
+    avg_eta = sum(detector_etas) / len(detector_etas)
+
+    # Средний dark count
+    detector_dark = [v["dark"] for v in params["detectors"].values()]
+    avg_dark = sum(detector_dark) / len(detector_dark)
+
+    transmitted = 0
+    detected = 0
+    errors = 0
+
+    for _ in range(num_packets):
+        # 1. Источник вообще сработал?
+        if random.random() > pair_eff:
+            continue
+
+        transmitted += 1
+
+        # 2. Канальные потери
+        if random.random() < avg_channel_loss:
+            continue
+
+        # 3. Детектор увидел?
+        if random.random() > avg_eta:
+            continue
+
+        detected += 1
+
+        # 4. Ошибка из-за dark counts
+        error_probability = avg_dark
+
+        # 5. Ошибка из-за Евы
+        for ch in active_eve_channels:
+            error_probability += params["channels"][ch]["eve_disturbance"]
+
+        error_probability = min(error_probability, 1.0)
+
+        if random.random() < error_probability:
+            errors += 1
+
+    success_rate = detected / num_packets if num_packets else 0.0
+    qber = errors / detected if detected else 0.0
+
+    return {
+        "message": message,
+        "num_packets": num_packets,
+        "transmitted": transmitted,
+        "detected": detected,
+        "errors": errors,
+        "success_rate": success_rate,
+        "qber": qber,
+        "eve_channels": active_eve_channels,
+    }
 # ============================================================
 # Simulation block placeholder
 # ============================================================
 
 st.subheader("Simulation")
 
-message = params["source"]["message"]
-num_packets = params["source"]["num_packets"]
-
 if st.button("Run simulation"):
+    result = run_simple_simulation(params)
 
-    st.success("Simulation placeholder")
+    st.success("Simulation complete")
 
-    st.write("Message:", message)
-    st.write("Packets:", num_packets)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Packets launched", result["num_packets"])
+    col2.metric("Packets detected", result["detected"])
+    col3.metric("Errors", result["errors"])
 
-    st.write("Active Eve channels:")
+    col1, col2 = st.columns(2)
+    col1.metric("Success rate", f"{result['success_rate']:.3f}")
+    col2.metric("QBER", f"{result['qber']:.3f}")
 
-    eve_channels = [
-        ch for ch, v in params["channels"].items()
-        if v["eve"]
-    ]
-
-    st.write(eve_channels)
+    st.write("Message:", result["message"])
+    st.write("Active Eve channels:", result["eve_channels"])
