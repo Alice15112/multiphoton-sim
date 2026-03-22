@@ -31,7 +31,12 @@ if "scheme_params" not in st.session_state:
             "message": "Hello Bob",
             "num_packets": 2000,
             "pair_generation_efficiency": 0.95,
-            "state_angle": 0.0
+            "state_angles": {
+                "channel_1": 0.0,
+                "channel_2": 0.0,
+                "channel_3": 0.0,
+                "channel_4": 0.0
+            }
         },
         "channels": {
             "channel_1": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15},
@@ -182,18 +187,47 @@ with right_col:
             0.01
         )
 
-        state_angle = st.slider(
-            "Source polarization angle",
+        st.markdown("#### Source polarization angles by channel")
+
+        angle_1 = st.slider(
+            "State angle for channel 1",
             -180.0,
             180.0,
-            params["source"]["state_angle"],
+            params["source"]["state_angles"]["channel_1"],
+            1.0
+        )
+
+        angle_2 = st.slider(
+            "State angle for channel 2",
+            -180.0,
+            180.0,
+            params["source"]["state_angles"]["channel_2"],
+            1.0
+        )
+
+        angle_3 = st.slider(
+            "State angle for channel 3",
+            -180.0,
+            180.0,
+            params["source"]["state_angles"]["channel_3"],
+            1.0
+        )
+
+        angle_4 = st.slider(
+            "State angle for channel 4",
+            -180.0,
+            180.0,
+            params["source"]["state_angles"]["channel_4"],
             1.0
         )
 
         params["source"]["message"] = message
         params["source"]["num_packets"] = num_packets
         params["source"]["pair_generation_efficiency"] = pair_generation_efficiency
-        params["source"]["state_angle"] = state_angle
+        params["source"]["state_angles"]["channel_1"] = angle_1
+        params["source"]["state_angles"]["channel_2"] = angle_2
+        params["source"]["state_angles"]["channel_3"] = angle_3
+        params["source"]["state_angles"]["channel_4"] = angle_4
 
     elif selected.startswith("channel"):
         st.markdown(f"### {selected}")
@@ -298,7 +332,7 @@ def run_simple_simulation(params):
     message = params["source"]["message"]
     num_packets = params["source"]["num_packets"]
     pair_eff = params["source"]["pair_generation_efficiency"]
-    state_angle = params["source"]["state_angle"]
+    state_angles = params["source"]["state_angles"]
 
     transmitted = 0
     detected = 0
@@ -333,8 +367,10 @@ def run_simple_simulation(params):
                 continue
 
             # 3. Quantum probability from source state + PR angle
+            channel_state_angle = state_angles[channel_name]
+
             p_quantum = quantum_measurement_probability(
-                state_angle_deg=state_angle,
+                state_angle_deg=channel_state_angle,
                 pr_angle_deg=pr["angle"],
                 pr_error=pr["error"]
             )
