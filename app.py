@@ -34,12 +34,14 @@ if "scheme_params" not in st.session_state:
             "message": "Hello Bob",
             "num_packets": 2000,
             "pair_generation_efficiency": 0.95,
+            "mode": "manual",
+            "preset_state": "psi1",
             "state_angles": {
-                "channel_1": 0.0,
-                "channel_2": 0.0,
-                "channel_3": 0.0,
-                "channel_4": 0.0,
-            },
+                    "channel_1": 0.0,
+                    "channel_2": 0.0,
+                    "channel_3": 0.0,
+                    "channel_4": 0.0,
+               },
         },
         "channels": {
             "channel_1": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15},
@@ -79,6 +81,12 @@ if "state_angles" not in params["source"]:
     if "state_angle" in params["source"]:
         del params["source"]["state_angle"]
 
+if "mode" not in params["source"]:
+    params["source"]["mode"] = "manual"
+
+if "preset_state" not in params["source"]:
+    params["source"]["preset_state"] = "psi1"
+    
 left_col, right_col = st.columns([2, 1])
 
 # ============================================================
@@ -101,6 +109,33 @@ CLICK_ZONES = {
     "bs_left": {"x1": 87, "x2": 140, "y1": 236, "y2": 265},
     "bs_right": {"x1": 526, "x2": 600, "y1": 239, "y2": 257},
     "source": {"x1": 38, "x2": 92, "y1": 161, "y2": 219},
+}
+
+PRESET_STATES = {
+    "psi1": {
+        "channel_1": 0.0,
+        "channel_2": 0.0,
+        "channel_3": 90.0,
+        "channel_4": 90.0,
+    },
+    "psi2": {
+        "channel_1": 0.0,
+        "channel_2": 90.0,
+        "channel_3": 0.0,
+        "channel_4": 90.0,
+    },
+    "psi3": {
+        "channel_1": 45.0,
+        "channel_2": -45.0,
+        "channel_3": 45.0,
+        "channel_4": -45.0,
+    },
+    "psi4": {
+        "channel_1": 90.0,
+        "channel_2": 0.0,
+        "channel_3": 90.0,
+        "channel_4": 0.0,
+    },
 }
 
 
@@ -301,51 +336,78 @@ with right_col:
             0.01,
         )
 
-        st.markdown("#### Polarization angles by channel")
-
-        angle_1 = st.slider(
-            "Channel 1 angle",
-            -180.0,
-            180.0,
-            params["source"]["state_angles"]["channel_1"],
-            1.0,
-            key="source_angle_1",
+        mode = st.radio(
+            "Source state mode",
+            ["manual", "preset_state"],
+            index=0 if params["source"]["mode"] == "manual" else 1,
         )
 
-        angle_2 = st.slider(
-            "Channel 2 angle",
-            -180.0,
-            180.0,
-            params["source"]["state_angles"]["channel_2"],
-            1.0,
-            key="source_angle_2",
-        )
+        preset_state = params["source"]["preset_state"]
 
-        angle_3 = st.slider(
-            "Channel 3 angle",
-            -180.0,
-            180.0,
-            params["source"]["state_angles"]["channel_3"],
-            1.0,
-            key="source_angle_3",
-        )
+        if mode == "preset_state":
+            preset_state = st.selectbox(
+                "Preset correlated state",
+                ["psi1", "psi2", "psi3", "psi4"],
+                index=["psi1", "psi2", "psi3", "psi4"].index(params["source"]["preset_state"]),
+            )
 
-        angle_4 = st.slider(
-            "Channel 4 angle",
-            -180.0,
-            180.0,
-            params["source"]["state_angles"]["channel_4"],
-            1.0,
-            key="source_angle_4",
-        )
+            st.markdown("#### Angles from preset")
+            preset_angles = PRESET_STATES[preset_state]
+    
+            st.write(preset_angles)
+
+            # apply preset to source angles
+            params["source"]["state_angles"] = preset_angles.copy()
+
+        else:
+            st.markdown("#### Polarization angles by channel")
+
+            angle_1 = st.slider(
+                "Channel 1 angle",
+                -180.0,
+                180.0,
+                params["source"]["state_angles"]["channel_1"],
+                1.0,
+                key="source_angle_1",
+            )
+
+            angle_2 = st.slider(
+                "Channel 2 angle",
+                -180.0,
+                180.0,
+                params["source"]["state_angles"]["channel_2"],
+                1.0,
+                key="source_angle_2",
+            )
+
+            angle_3 = st.slider(
+                "Channel 3 angle",
+                -180.0,
+                180.0,
+                params["source"]["state_angles"]["channel_3"],
+                1.0,
+                key="source_angle_3",
+            )
+
+            angle_4 = st.slider(
+                "Channel 4 angle",
+                -180.0,
+                180.0,
+                params["source"]["state_angles"]["channel_4"],
+                1.0,
+                key="source_angle_4",
+            )
+
+            params["source"]["state_angles"]["channel_1"] = angle_1
+            params["source"]["state_angles"]["channel_2"] = angle_2
+            params["source"]["state_angles"]["channel_3"] = angle_3
+            params["source"]["state_angles"]["channel_4"] = angle_4
 
         params["source"]["message"] = message
         params["source"]["num_packets"] = num_packets
         params["source"]["pair_generation_efficiency"] = pair_generation_efficiency
-        params["source"]["state_angles"]["channel_1"] = angle_1
-        params["source"]["state_angles"]["channel_2"] = angle_2
-        params["source"]["state_angles"]["channel_3"] = angle_3
-        params["source"]["state_angles"]["channel_4"] = angle_4
+        params["source"]["mode"] = mode
+        params["source"]["preset_state"] = preset_state
 
     elif selected.startswith("channel"):
         st.markdown(f"### {selected}")
