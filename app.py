@@ -1,3 +1,6 @@
+import math
+import random
+
 import streamlit as st
 from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
@@ -7,7 +10,7 @@ st.set_page_config(page_title="Multiphoton Quantum Simulator", layout="wide")
 st.title("Multiphoton Quantum Communication Simulator")
 
 st.markdown(
-"""
+    """
 Interactive simulator of the quantum communication scheme.
 
 Click elements of the scheme to configure:
@@ -27,11 +30,16 @@ if "selected_element" not in st.session_state:
 
 if "scheme_params" not in st.session_state:
     st.session_state.scheme_params = {
-       "source": {
+        "source": {
             "message": "Hello Bob",
             "num_packets": 2000,
             "pair_generation_efficiency": 0.95,
-            "state_angle": 0.0
+            "state_angles": {
+                "channel_1": 0.0,
+                "channel_2": 0.0,
+                "channel_3": 0.0,
+                "channel_4": 0.0,
+            },
         },
         "channels": {
             "channel_1": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15},
@@ -54,43 +62,49 @@ if "scheme_params" not in st.session_state:
         "beam_splitters": {
             "bs_left": {"loss": 0.02},
             "bs_right": {"loss": 0.02},
-        }
+        },
     }
 
 params = st.session_state.scheme_params
-left_col, right_col = st.columns([2, 1])
 
+# Migration for old saved state_angle -> new state_angles
+if "state_angles" not in params["source"]:
+    old_angle = params["source"].get("state_angle", 0.0)
+    params["source"]["state_angles"] = {
+        "channel_1": old_angle,
+        "channel_2": old_angle,
+        "channel_3": old_angle,
+        "channel_4": old_angle,
+    }
+    if "state_angle" in params["source"]:
+        del params["source"]["state_angle"]
+
+left_col, right_col = st.columns([2, 1])
 
 # ============================================================
 # Click zones on scheme
 # ============================================================
 
 CLICK_ZONES = {
-
     "channel_1": {"x1": 366, "x2": 630, "y1": 91, "y2": 129},
     "channel_2": {"x1": 582, "x2": 640, "y1": 205, "y2": 240},
     "channel_3": {"x1": 582, "x2": 640, "y1": 260, "y2": 303},
     "channel_4": {"x1": 366, "x2": 630, "y1": 367, "y2": 421},
-
     "detector_1": {"x1": 822, "x2": 918, "y1": 60, "y2": 150},
     "detector_2": {"x1": 822, "x2": 918, "y1": 150, "y2": 250},
     "detector_3": {"x1": 822, "x2": 918, "y1": 250, "y2": 340},
     "detector_4": {"x1": 822, "x2": 918, "y1": 350, "y2": 450},
-
     "pr_1": {"x1": 640, "x2": 670, "y1": 73, "y2": 134},
     "pr_2": {"x1": 640, "x2": 670, "y1": 181, "y2": 240},
     "pr_3": {"x1": 640, "x2": 670, "y1": 240, "y2": 300},
     "pr_4": {"x1": 640, "x2": 670, "y1": 367, "y2": 421},
-
     "bs_left": {"x1": 87, "x2": 140, "y1": 236, "y2": 265},
     "bs_right": {"x1": 526, "x2": 600, "y1": 239, "y2": 257},
-
     "source": {"x1": 38, "x2": 92, "y1": 161, "y2": 219},
 }
 
 
 def detect_clicked_zone(coords, zones):
-
     if coords is None:
         return None
 
@@ -103,230 +117,33 @@ def detect_clicked_zone(coords, zones):
 
     return None
 
-# ============================================================
-# Display scheme
-# ============================================================
 
-with left_col:
-    st.subheader("Experimental Scheme")
+def draw_highlight_on_scheme(image: Image.Image, selected: str, zones: dict) -> Image.Image:
+    highlighted = image.copy()
+    draw = ImageDraw.Draw(highlighted)
 
-    def draw_highlight_on_scheme(image: Image.Image, selected: str, zones: dict) -> Image.Image:
-        highlighted = image.copy()
-        draw = ImageDraw.Draw(highlighted)
+    if selected in zones:
+        zone = zones[selected]
+        x1, y1, x2, y2 = zone["x1"], zone["y1"], zone["x2"], zone["y2"]
 
-        if selected in zones:
-            zone = zones[selected]
-            x1, y1, x2, y2 = zone["x1"], zone["y1"], zone["x2"], zone["y2"]
+        draw.rectangle([x1, y1, x2, y2], outline="red", width=4)
+        draw.rectangle([x1 + 2, y1 + 2, x2 - 2, y2 - 2], outline="yellow", width=2)
 
-            draw.rectangle([x1, y1, x2, y2], outline="red", width=4)
-            draw.rectangle([x1 + 2, y1 + 2, x2 - 2, y2 - 2], outline="yellow", width=2)
-
-        return highlighted
-
-    base_image = Image.open("assets/scheme.png")
-
-    display_image = draw_highlight_on_scheme(
-        base_image,
-        st.session_state.selected_element,
-        CLICK_ZONES
-    )
-
-    coords = streamlit_image_coordinates(
-    display_image,
-    key="scheme",
-    width=1000
-    )
-
-    clicked_zone = detect_clicked_zone(coords, CLICK_ZONES)
-
-    if clicked_zone is not None:
-        st.session_state.selected_element = clicked_zone
-        st.rerun()
-
-    selected = st.session_state.selected_element
-
-    st.caption(f"Clicked coordinates: {coords}")
-    st.caption(f"Selected element: {selected}")
-
-# ============================================================
-# Settings panel
-# ============================================================
-
-with right_col:
-    st.subheader("Element Settings")
-
-    if selected is None:
-        st.info("Click any element on the scheme to configure it.")
-
-    elif selected == "source":
-        st.markdown("### Source S")
-
-        message = st.text_input(
-            "Message Alice sends",
-            value=params["source"]["message"]
-        )
-
-        num_packets = st.slider(
-            "Number of photon packets",
-            100,
-            20000,
-            params["source"]["num_packets"],
-            100
-        )
-
-        pair_generation_efficiency = st.slider(
-            "Pair generation efficiency",
-            0.0,
-            1.0,
-            params["source"]["pair_generation_efficiency"],
-            0.01
-        )
-
-        st.markdown("#### Polarization angles by channel")
-
-        angle_1 = st.slider(
-            "Channel 1 angle",
-            -180.0,
-            180.0,
-            params["source"]["state_angles"]["channel_1"],    
-            1.0,
-            key="source_angle_1"
-        )
-
-        angle_2 = st.slider(
-            "Channel 2 angle",
-            -180.0,
-            180.0,
-            params["source"]["state_angles"]["channel_2"],
-            1.0,
-            key="source_angle_2"
-        )
-
-        angle_3 = st.slider(
-            "Channel 3 angle",
-            -180.0,
-            180.0,
-            params["source"]["state_angles"]["channel_3"],
-            1.0,
-            key="source_angle_3"
-            )
-
-        angle_4 = st.slider(
-            "Channel 4 angle",
-            -180.0,
-            180.0,
-            params["source"]["state_angles"]["channel_4"],
-            1.0,
-            key="source_angle_4"
-        )
-
-        params["source"]["message"] = message
-        params["source"]["num_packets"] = num_packets
-        params["source"]["pair_generation_efficiency"] = pair_generation_efficiency
-
-        params["source"]["state_angles"]["channel_1"] = angle_1
-        params["source"]["state_angles"]["channel_2"] = angle_2
-        params["source"]["state_angles"]["channel_3"] = angle_3
-        params["source"]["state_angles"]["channel_4"] = angle_4
-
-    elif selected.startswith("channel"):
-        st.markdown(f"### {selected}")
-
-        eve = st.checkbox(
-            "Eve taps this channel",
-            value=params["channels"][selected]["eve"]
-        )
-
-        loss = st.slider(
-            "Channel loss",
-            0.0,
-            1.0,
-            params["channels"][selected]["loss"],
-            0.01
-        )
-        eve_disturbance = st.slider(
-            "Eve disturbance probability",
-             0.0,
-             1.0,
-            params["channels"][selected]["eve_disturbance"],
-            0.01
-        )
-
-        params["channels"][selected]["eve"] = eve
-        params["channels"][selected]["loss"] = loss
-        params["channels"][selected]["eve_disturbance"] = eve_disturbance
-
-    elif selected.startswith("pr"):
-        st.markdown(f"### {selected}")
-
-        angle = st.slider(
-            "Polarization rotation angle",
-            -180.0,
-            180.0,
-            params["pr"][selected]["angle"],
-            1.0
-        )
-
-        error = st.slider(
-            "Rotation error",
-            0.0,
-            0.2,
-            params["pr"][selected]["error"],
-            0.01
-        )
-
-        params["pr"][selected]["angle"] = angle
-        params["pr"][selected]["error"] = error
-
-    elif selected.startswith("detector"):
-        st.markdown(f"### {selected}")
-
-        eta = st.slider(
-            "Detector efficiency η",
-            0.0,
-            1.0,
-            params["detectors"][selected]["eta"],
-            0.01
-        )
-
-        dark = st.slider(
-            "Dark count probability",
-            0.0,
-            0.2,
-            params["detectors"][selected]["dark"],
-            0.001
-        )
-
-        params["detectors"][selected]["eta"] = eta
-        params["detectors"][selected]["dark"] = dark
-
-    elif selected.startswith("bs"):
-        st.markdown(f"### {selected}")
-
-        loss = st.slider(
-            "Beam splitter loss",
-            0.0,
-            1.0,
-            params["beam_splitters"][selected]["loss"],
-            0.01
-        )
-
-        params["beam_splitters"][selected]["loss"] = loss
-
-st.divider()
-
-# ============================================================
-# Display current configuration
-# ============================================================
-
-st.subheader("Current Scheme Configuration")
-
-st.json(params)
+    return highlighted
 
 
-st.divider()
+def quantum_measurement_probability(state_angle_deg: float, pr_angle_deg: float, pr_error: float) -> float:
+    """
+    Quantum measurement probability via Malus-like law:
+    P = cos^2(theta_state - theta_PR_effective)
+    """
+    effective_pr_angle = pr_angle_deg + random.uniform(-pr_error * 180.0, pr_error * 180.0)
 
-import random
+    angle_diff_rad = math.radians(state_angle_deg - effective_pr_angle)
+    probability = math.cos(angle_diff_rad) ** 2
+
+    return max(0.0, min(1.0, probability))
+
 
 def run_simple_simulation(params):
     message = params["source"]["message"]
@@ -372,26 +189,25 @@ def run_simple_simulation(params):
             p_quantum = quantum_measurement_probability(
                 state_angle_deg=channel_state_angle,
                 pr_angle_deg=pr["angle"],
-                pr_error=pr["error"]
+                pr_error=pr["error"],
             )
 
             # 4. Eve adds disturbance by increasing error chance
             eve_disturbance = channel.get("eve_disturbance", 0.0) if channel["eve"] else 0.0
 
-            # 5. Detector click probability combines:
-            # quantum probability * detector efficiency
+            # 5. Detector click probability combines quantum probability and efficiency
             p_click = p_quantum * detector["eta"]
 
             click = random.random() < p_click
 
-            # dark count if no click
+            # Dark count if no click
             if not click and random.random() < detector["dark"]:
                 click = True
 
             if click:
                 packet_detected = True
 
-                # error if Eve disturbed or if basis mismatch is strong
+                # Error if Eve disturbed or if basis mismatch is strong
                 basis_error = 1.0 - p_quantum
                 total_error_probability = min(1.0, basis_error + eve_disturbance)
 
@@ -415,26 +231,220 @@ def run_simple_simulation(params):
         "success_rate": success_rate,
         "qber": qber,
         "eve_channels": active_eve_channels,
-        "state_angle": state_angle,
+        "state_angles": state_angles,
     }
 
-import math
-import random
 
-def quantum_measurement_probability(state_angle_deg: float, pr_angle_deg: float, pr_error: float) -> float:
-    """
-    Quantum measurement probability via Malus-like law:
-    P = cos^2(theta_state - theta_PR_effective)
-    """
-    effective_pr_angle = pr_angle_deg + random.uniform(-pr_error * 180.0, pr_error * 180.0)
-
-    angle_diff_rad = math.radians(state_angle_deg - effective_pr_angle)
-    probability = math.cos(angle_diff_rad) ** 2
-
-    return max(0.0, min(1.0, probability))
-    
 # ============================================================
-# Simulation block placeholder
+# Display scheme
+# ============================================================
+
+with left_col:
+    st.subheader("Experimental Scheme")
+
+    base_image = Image.open("assets/scheme.png")
+
+    display_image = draw_highlight_on_scheme(
+        base_image,
+        st.session_state.selected_element,
+        CLICK_ZONES,
+    )
+
+    coords = streamlit_image_coordinates(
+        display_image,
+        key="scheme",
+        width=1000,
+    )
+
+    clicked_zone = detect_clicked_zone(coords, CLICK_ZONES)
+
+    if clicked_zone is not None:
+        st.session_state.selected_element = clicked_zone
+        st.rerun()
+
+    selected = st.session_state.selected_element
+
+    st.caption(f"Clicked coordinates: {coords}")
+    st.caption(f"Selected element: {selected}")
+
+# ============================================================
+# Settings panel
+# ============================================================
+
+with right_col:
+    st.subheader("Element Settings")
+
+    if selected is None:
+        st.info("Click any element on the scheme to configure it.")
+
+    elif selected == "source":
+        st.markdown("### Source S")
+
+        message = st.text_input(
+            "Message Alice sends",
+            value=params["source"]["message"],
+        )
+
+        num_packets = st.slider(
+            "Number of photon packets",
+            100,
+            20000,
+            params["source"]["num_packets"],
+            100,
+        )
+
+        pair_generation_efficiency = st.slider(
+            "Pair generation efficiency",
+            0.0,
+            1.0,
+            params["source"]["pair_generation_efficiency"],
+            0.01,
+        )
+
+        st.markdown("#### Polarization angles by channel")
+
+        angle_1 = st.slider(
+            "Channel 1 angle",
+            -180.0,
+            180.0,
+            params["source"]["state_angles"]["channel_1"],
+            1.0,
+            key="source_angle_1",
+        )
+
+        angle_2 = st.slider(
+            "Channel 2 angle",
+            -180.0,
+            180.0,
+            params["source"]["state_angles"]["channel_2"],
+            1.0,
+            key="source_angle_2",
+        )
+
+        angle_3 = st.slider(
+            "Channel 3 angle",
+            -180.0,
+            180.0,
+            params["source"]["state_angles"]["channel_3"],
+            1.0,
+            key="source_angle_3",
+        )
+
+        angle_4 = st.slider(
+            "Channel 4 angle",
+            -180.0,
+            180.0,
+            params["source"]["state_angles"]["channel_4"],
+            1.0,
+            key="source_angle_4",
+        )
+
+        params["source"]["message"] = message
+        params["source"]["num_packets"] = num_packets
+        params["source"]["pair_generation_efficiency"] = pair_generation_efficiency
+        params["source"]["state_angles"]["channel_1"] = angle_1
+        params["source"]["state_angles"]["channel_2"] = angle_2
+        params["source"]["state_angles"]["channel_3"] = angle_3
+        params["source"]["state_angles"]["channel_4"] = angle_4
+
+    elif selected.startswith("channel"):
+        st.markdown(f"### {selected}")
+
+        eve = st.checkbox(
+            "Eve taps this channel",
+            value=params["channels"][selected]["eve"],
+        )
+
+        loss = st.slider(
+            "Channel loss",
+            0.0,
+            1.0,
+            params["channels"][selected]["loss"],
+            0.01,
+        )
+
+        eve_disturbance = st.slider(
+            "Eve disturbance probability",
+            0.0,
+            1.0,
+            params["channels"][selected]["eve_disturbance"],
+            0.01,
+        )
+
+        params["channels"][selected]["eve"] = eve
+        params["channels"][selected]["loss"] = loss
+        params["channels"][selected]["eve_disturbance"] = eve_disturbance
+
+    elif selected.startswith("pr"):
+        st.markdown(f"### {selected}")
+
+        angle = st.slider(
+            "Polarization rotation angle",
+            -180.0,
+            180.0,
+            params["pr"][selected]["angle"],
+            1.0,
+        )
+
+        error = st.slider(
+            "Rotation error",
+            0.0,
+            0.2,
+            params["pr"][selected]["error"],
+            0.01,
+        )
+
+        params["pr"][selected]["angle"] = angle
+        params["pr"][selected]["error"] = error
+
+    elif selected.startswith("detector"):
+        st.markdown(f"### {selected}")
+
+        eta = st.slider(
+            "Detector efficiency η",
+            0.0,
+            1.0,
+            params["detectors"][selected]["eta"],
+            0.01,
+        )
+
+        dark = st.slider(
+            "Dark count probability",
+            0.0,
+            0.2,
+            params["detectors"][selected]["dark"],
+            0.001,
+        )
+
+        params["detectors"][selected]["eta"] = eta
+        params["detectors"][selected]["dark"] = dark
+
+    elif selected.startswith("bs"):
+        st.markdown(f"### {selected}")
+
+        loss = st.slider(
+            "Beam splitter loss",
+            0.0,
+            1.0,
+            params["beam_splitters"][selected]["loss"],
+            0.01,
+        )
+
+        params["beam_splitters"][selected]["loss"] = loss
+
+st.divider()
+
+# ============================================================
+# Display current configuration
+# ============================================================
+
+st.subheader("Current Scheme Configuration")
+st.json(params)
+
+st.divider()
+
+# ============================================================
+# Simulation
 # ============================================================
 
 st.subheader("Simulation")
@@ -455,3 +465,4 @@ if st.button("Run simulation"):
 
     st.write("Message:", result["message"])
     st.write("Active Eve channels:", result["eve_channels"])
+    st.write("State angles:", result["state_angles"])
