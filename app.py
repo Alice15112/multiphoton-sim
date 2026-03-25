@@ -199,6 +199,25 @@ def polarization_label_to_angle(label: str) -> float:
         return 90.0
     raise ValueError(f"Unknown polarization label: {label}")
 
+def article_state_channel_probability(state_label: str, channel_name: str, pr_angle_deg: float, pr_error: float) -> float:
+    """
+    Average measurement probability over all components of the selected article state.
+    This is closer to the idea of superposition than choosing one random component.
+    """
+    components = ARTICLE_STATES[state_label]
+
+    probabilities = []
+    for component in components:
+        state_angle = polarization_label_to_angle(component[channel_name])
+        p = quantum_measurement_probability(
+            state_angle_deg=state_angle,
+            pr_angle_deg=pr_angle_deg,
+            pr_error=pr_error,
+        )
+        probabilities.append(p)
+
+    return sum(probabilities) / len(probabilities)
+
 
 def quantum_measurement_probability(state_angle_deg: float, pr_angle_deg: float, pr_error: float) -> float:
     """
@@ -237,14 +256,6 @@ def run_simple_simulation(params):
 
         transmitted += 1
 
-        if source_mode == "article_state" and selected_state_label in ARTICLE_STATES:
-            component = random.choice(ARTICLE_STATES[selected_state_label])
-            state_angles_this_packet = {
-                ch: polarization_label_to_angle(component[ch]) for ch in channel_names
-            }
-        else:
-            state_angles_this_packet = params["source"]["state_angles"].copy()
-
         packet_detected = False
         packet_error = False
 
@@ -253,28 +264,41 @@ def run_simple_simulation(params):
             pr = params["pr"][pr_name]
             detector = params["detectors"][detector_name]
 
+            # 1. Channel loss
             if random.random() < channel["loss"]:
                 continue
 
-            channel_state_angle = state_angles_this_packet[channel_name]
+            # 2. Quantum probability
+            if source_mode == "article_state" and selected_state_label in ARTICLE_STATES:
+                p_quantum = article_state_channel_probability(
+                    state_label=selected_state_label,
+                    channel_name=channel_name,
+                    pr_angle_deg=pr["angle"],
+                    pr_error=pr["error"],
+                )
+            else:
+                channel_state_angle = params["source"]["state_angles"][channel_name]
+                p_quantum = quantum_measurement_probability(
+                    state_angle_deg=channel_state_angle,
+                    pr_angle_deg=pr["angle"],
+                    pr_error=pr["error"],
+                )
 
-            p_quantum = quantum_measurement_probability(
-                state_angle_deg=channel_state_angle,
-                pr_angle_deg=pr["angle"],
-                pr_error=pr["error"],
-            )
-
+            # 3. Eve disturbance
             eve_disturbance = channel.get("eve_disturbance", 0.0) if channel["eve"] else 0.0
 
+            # 4. Detector click
             p_click = p_quantum * detector["eta"]
             click = random.random() < p_click
 
+            # 5. Dark counts
             if not click and random.random() < detector["dark"]:
                 click = True
 
             if click:
                 packet_detected = True
 
+                # 6. Error model
                 basis_error = 1.0 - p_quantum
                 local_error_probability = min(1.0, basis_error + eve_disturbance)
 
@@ -301,7 +325,6 @@ def run_simple_simulation(params):
         "selected_state_label": selected_state_label,
         "source_mode": source_mode,
     }
-
 # ============================================================
 # Display scheme
 # ============================================================
