@@ -323,6 +323,107 @@ def projector_for_angle(angle_deg, pr_error):
 
     return np.outer(ket_theta, ket_theta)
 
+def build_article_state_vectors():
+    """
+    Real 4-qubit vectors based on the article-style x/y components.
+    x = |0>, y = |1>
+    Equal amplitudes 1/2 on 4 basis terms.
+    """
+
+    x = 0
+    y = 1
+
+    psi1 = (
+        basis_ket((y, x, y, x)) +
+        basis_ket((x, y, x, y)) +
+        basis_ket((x, x, y, y)) +
+        basis_ket((y, y, x, x))
+    ) / 2.0
+
+    psi2 = (
+        basis_ket((y, x, y, y)) +
+        basis_ket((x, y, x, x)) +
+        basis_ket((x, x, y, x)) +
+        basis_ket((y, y, x, y))
+    ) / 2.0
+
+    psi3 = (
+        basis_ket((y, y, y, y)) +
+        basis_ket((x, x, x, x)) +
+        basis_ket((x, y, y, x)) +
+        basis_ket((y, x, x, y))
+    ) / 2.0
+
+    psi4 = (
+        basis_ket((y, y, y, x)) +
+        basis_ket((x, x, x, y)) +
+        basis_ket((x, y, y, y)) +
+        basis_ket((y, x, x, x))
+    ) / 2.0
+
+    return {
+        "psi1": normalize_state(psi1),
+        "psi2": normalize_state(psi2),
+        "psi3": normalize_state(psi3),
+        "psi4": normalize_state(psi4),
+    }
+
+
+ARTICLE_STATE_VECTORS = build_article_state_vectors()
+
+def reduced_density_matrix_one_qubit(state_vector, qubit_index):
+    """
+    Return 2x2 reduced density matrix for one qubit from a 4-qubit pure state.
+    qubit_index in {0,1,2,3}
+    """
+    psi_tensor = state_vector.reshape(2, 2, 2, 2)
+
+    rho = np.tensordot(
+        psi_tensor,
+        psi_tensor,
+        axes=(
+            [q for q in range(4) if q != qubit_index],
+            [q for q in range(4) if q != qubit_index],
+        ),
+    )
+    return rho
+
+
+def projector_for_angle(angle_deg, pr_error):
+    """
+    Measurement projector |theta><theta|
+    with optional small random angle shift due to PR error.
+    """
+    effective_angle = angle_deg + random.uniform(-pr_error * 180.0, pr_error * 180.0)
+    theta = math.radians(effective_angle)
+
+    ket_theta = np.array([
+        math.cos(theta),
+        math.sin(theta),
+    ], dtype=float)
+
+    return np.outer(ket_theta, ket_theta)
+
+
+def article_state_channel_probability_vector(state_label, channel_name, pr_angle_deg, pr_error):
+    """
+    Quantum probability from true 4-qubit vector state via reduced density matrix.
+    """
+    state_vector = ARTICLE_STATE_VECTORS[state_label]
+
+    channel_to_qubit = {
+        "channel_1": 0,
+        "channel_2": 1,
+        "channel_3": 2,
+        "channel_4": 3,
+    }
+
+    qubit_index = channel_to_qubit[channel_name]
+    rho_i = reduced_density_matrix_one_qubit(state_vector, qubit_index)
+    projector = projector_for_angle(pr_angle_deg, pr_error)
+
+    probability = float(np.trace(rho_i @ projector))
+    return max(0.0, min(1.0, probability))
 
 def article_state_channel_probability_vector(state_label, channel_name, pr_angle_deg, pr_error):
     """
