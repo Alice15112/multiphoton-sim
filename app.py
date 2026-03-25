@@ -199,6 +199,33 @@ def polarization_label_to_angle(label: str) -> float:
         return 90.0
     raise ValueError(f"Unknown polarization label: {label}")
 
+import numpy as np
+
+
+def ket_index(bits):
+    """
+    bits: tuple/list of 4 bits, e.g. (1,0,1,0)
+    """
+    b1, b2, b3, b4 = bits
+    return (b1 << 3) | (b2 << 2) | (b3 << 1) | b4
+
+
+def basis_ket(bits):
+    """
+    Return computational basis ket in C^16 for 4 qubits.
+    x -> 0, y -> 1
+    """
+    vec = np.zeros(16, dtype=float)
+    vec[ket_index(bits)] = 1.0
+    return vec
+
+
+def normalize_state(vec):
+    norm = np.linalg.norm(vec)
+    if norm == 0:
+        return vec
+    return vec / norm
+
 def article_state_channel_probability(state_label: str, channel_name: str, pr_angle_deg: float, pr_error: float) -> float:
     """
     Average measurement probability over all components of the selected article state.
@@ -218,6 +245,104 @@ def article_state_channel_probability(state_label: str, channel_name: str, pr_an
 
     return sum(probabilities) / len(probabilities)
 
+def build_article_state_vectors():
+    """
+    Real 4-qubit vectors based on the article-style x/y components.
+    x = |0>, y = |1>
+    Equal amplitudes 1/2 on 4 basis terms.
+    """
+
+    x = 0
+    y = 1
+
+    psi1 = (
+        basis_ket((y, x, y, x)) +
+        basis_ket((x, y, x, y)) +
+        basis_ket((x, x, y, y)) +
+        basis_ket((y, y, x, x))
+    ) / 2.0
+
+    psi2 = (
+        basis_ket((y, x, y, y)) +
+        basis_ket((x, y, x, x)) +
+        basis_ket((x, x, y, x)) +
+        basis_ket((y, y, x, y))
+    ) / 2.0
+
+    psi3 = (
+        basis_ket((y, y, y, y)) +
+        basis_ket((x, x, x, x)) +
+        basis_ket((x, y, y, x)) +
+        basis_ket((y, x, x, y))
+    ) / 2.0
+
+    psi4 = (
+        basis_ket((y, y, y, x)) +
+        basis_ket((x, x, x, y)) +
+        basis_ket((x, y, y, y)) +
+        basis_ket((y, x, x, x))
+    ) / 2.0
+
+    return {
+        "psi1": normalize_state(psi1),
+        "psi2": normalize_state(psi2),
+        "psi3": normalize_state(psi3),
+        "psi4": normalize_state(psi4),
+    }
+
+
+ARTICLE_STATE_VECTORS = build_article_state_vectors()
+
+def state_vector_to_density_matrix(state_vector):
+    return np.outer(state_vector, state_vector)
+
+
+def reduced_density_matrix_one_qubit(state_vector, qubit_index):
+    """
+    Return 2x2 reduced density matrix for one qubit from a 4-qubit pure state.
+    qubit_index in {0,1,2,3}
+    """
+    psi_tensor = state_vector.reshape(2, 2, 2, 2)
+    rho = np.tensordot(psi_tensor, psi_tensor, axes=([q for q in range(4) if q != qubit_index],
+                                                     [q for q in range(4) if q != qubit_index]))
+    return rho
+
+
+def projector_for_angle(angle_deg, pr_error):
+    """
+    Measurement projector |theta><theta|
+    with optional small random angle shift due to PR error.
+    """
+    effective_angle = angle_deg + random.uniform(-pr_error * 180.0, pr_error * 180.0)
+    theta = math.radians(effective_angle)
+
+    ket_theta = np.array([
+        math.cos(theta),
+        math.sin(theta)
+    ], dtype=float)
+
+    return np.outer(ket_theta, ket_theta)
+
+
+def article_state_channel_probability_vector(state_label, channel_name, pr_angle_deg, pr_error):
+    """
+    Quantum probability from true 4-qubit vector state via reduced density matrix.
+    """
+    state_vector = ARTICLE_STATE_VECTORS[state_label]
+
+    channel_to_qubit = {
+        "channel_1": 0,
+        "channel_2": 1,
+        "channel_3": 2,
+        "channel_4": 3,
+    }
+
+    qubit_index = channel_to_qubit[channel_name]
+    rho_i = reduced_density_matrix_one_qubit(state_vector, qubit_index)
+    projector = projector_for_angle(pr_angle_deg, pr_error)
+
+    probability = float(np.trace(rho_i @ projector))
+    return max(0.0, min(1.0, probability))
 
 def quantum_measurement_probability(state_angle_deg: float, pr_angle_deg: float, pr_error: float) -> float:
     """
@@ -269,8 +394,8 @@ def run_simple_simulation(params):
                 continue
 
             # 2. Quantum probability
-            if source_mode == "article_state" and selected_state_label in ARTICLE_STATES:
-                p_quantum = article_state_channel_probability(
+            if source_mode == "article_state" and selected_state_label in ARTICLE_STATE_VECTORS:
+                p_quantum = article_state_channel_probability_vector(
                     state_label=selected_state_label,
                     channel_name=channel_name,
                     pr_angle_deg=pr["angle"],
