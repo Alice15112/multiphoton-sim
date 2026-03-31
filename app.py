@@ -545,7 +545,52 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
         "is_correct": is_correct,
     }
 
+def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
+    results = []
 
+    confusion_matrix = {
+        "psi1": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
+        "psi2": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
+        "psi3": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
+        "psi4": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
+    }
+
+    total_sent = len(state_sequence)
+    total_detected = 0
+    total_lost = 0
+    total_correct = 0
+
+    for state_label in state_sequence:
+        result = simulate_single_state_transmission(state_label, params)
+        results.append(result)
+
+        if result["packet_detected"]:
+            total_detected += 1
+
+            decoded_state = result["decoded_state"]
+            confusion_matrix[state_label][decoded_state] += 1
+
+            if result["is_correct"]:
+                total_correct += 1
+        else:
+            total_lost += 1
+
+    detection_rate = total_detected / total_sent if total_sent else 0.0
+    symbol_accuracy = total_correct / total_detected if total_detected else 0.0
+    loss_rate = total_lost / total_sent if total_sent else 0.0
+
+    return {
+        "results": results,
+        "confusion_matrix": confusion_matrix,
+        "total_sent": total_sent,
+        "total_detected": total_detected,
+        "total_lost": total_lost,
+        "total_correct": total_correct,
+        "detection_rate": detection_rate,
+        "symbol_accuracy": symbol_accuracy,
+        "loss_rate": loss_rate,
+    }
+    
 def clone_params_without_eve(params):
     cloned = {
         "source": {
@@ -582,6 +627,38 @@ def clone_params_without_eve(params):
 
     return cloned
 
+def recovered_bits_from_results(results: list[dict], fill_missing: str = "??") -> str:
+    recovered_chunks = []
+
+    for result in results:
+        if result["decoded_bits"] is None:
+            recovered_chunks.append(fill_missing)
+        else:
+            recovered_chunks.append(result["decoded_bits"])
+
+    return "".join(recovered_chunks)
+
+def keep_only_binary_chars(bitstring: str) -> str:
+    return "".join(ch for ch in bitstring if ch in "01")
+
+def build_message_transmission_summary(text: str, params: dict) -> dict:
+    encoded = encode_text_to_states(text)
+    sequence_result = simulate_state_sequence(encoded["states"], params)
+
+    recovered_bits_raw = recovered_bits_from_results(sequence_result["results"])
+    recovered_bits_clean = keep_only_binary_chars(recovered_bits_raw)
+    recovered_text = bitstring_to_text(recovered_bits_clean)
+
+    return {
+        "original_text": text,
+        "original_bitstring": encoded["bitstring"],
+        "bit_pairs": encoded["bit_pairs"],
+        "sent_states": encoded["states"],
+        "sequence_result": sequence_result,
+        "recovered_bits_raw": recovered_bits_raw,
+        "recovered_bits_clean": recovered_bits_clean,
+        "recovered_text": recovered_text,
+    }
 
 def plot_confusion_heatmap(confusion_percent_df):
     fig, ax = plt.subplots(figsize=(6, 5))
@@ -1157,6 +1234,29 @@ with st.expander("Single state transmission test"):
 
 st.divider()
 
+with st.expander("Message transmission test"):
+    message_result = build_message_transmission_summary(params["source"]["message"], params)
+
+    st.write("Original text:", message_result["original_text"])
+    st.write("Original bitstring:", message_result["original_bitstring"])
+    st.write("Bit pairs:", message_result["bit_pairs"])
+    st.write("Sent states:", message_result["sent_states"])
+
+    seq = message_result["sequence_result"]
+    st.write("Total sent:", seq["total_sent"])
+    st.write("Total detected:", seq["total_detected"])
+    st.write("Total lost:", seq["total_lost"])
+    st.write("Detection rate:", f"{seq['detection_rate']:.3f}")
+    st.write("Symbol accuracy:", f"{seq['symbol_accuracy']:.3f}")
+    st.write("Loss rate:", f"{seq['loss_rate']:.3f}")
+
+    st.write("Recovered bits raw:", message_result["recovered_bits_raw"])
+    st.write("Recovered bits clean:", message_result["recovered_bits_clean"])
+    st.write("Recovered text:", message_result["recovered_text"])
+
+    transmission_df = pd.DataFrame(seq["results"])
+    st.dataframe(transmission_df, use_container_width=True)
+    
 # ============================================================
 # Simulation
 # ============================================================
