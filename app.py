@@ -72,6 +72,9 @@ if "scheme_params" not in st.session_state:
             "bs_left": {"loss": 0.02},
             "bs_right": {"loss": 0.02},
         },
+        "simulation": {
+            "detection_mode": "any_click"
+        },
     }
 
 params = st.session_state.scheme_params
@@ -647,6 +650,59 @@ def generate_text_analysis(result_no_eve, result_attack):
     )
 
     return "\n".join(lines)
+
+def is_informative_detection(pattern: tuple, mode: str = "any_click") -> bool:
+    if mode == "any_click":
+        return any(pattern)
+
+    if mode == "fourfold":
+        return all(click == 1 for click in pattern)
+
+    raise ValueError(f"Unknown detection mode: {mode}")
+
+def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
+    if state_label not in ARTICLE_STATE_VECTORS:
+        raise ValueError(f"Unknown article state: {state_label}")
+
+    detection_mode = params.get("simulation", {}).get("detection_mode", "any_click")
+
+    state_vector = ARTICLE_STATE_VECTORS[state_label]
+    sent_bits = STATE_TO_BITS[state_label]
+
+    effective_angles = effective_pr_angles_for_packet(params)
+    joint_probs = joint_pattern_probabilities(state_vector, effective_angles)
+    ideal_pattern = sample_joint_pattern(joint_probs)
+
+    observed_pattern = apply_channel_and_detector_effects(ideal_pattern, params)
+
+    packet_detected = is_informative_detection(observed_pattern, detection_mode)
+    was_lost = not packet_detected
+
+    decoded_state = None
+    decoded_bits = None
+    decoding_confidence = 0.0
+    is_correct = False
+
+    if packet_detected:
+        decoded_state, decoding_confidence = decode_state_from_pattern(
+            observed_pattern,
+            effective_angles,
+        )
+        decoded_bits = STATE_TO_BITS[decoded_state]
+        is_correct = decoded_state == state_label
+
+    return {
+        "sent_state": state_label,
+        "sent_bits": sent_bits,
+        "ideal_pattern": ideal_pattern,
+        "observed_pattern": observed_pattern,
+        "packet_detected": packet_detected,
+        "was_lost": was_lost,
+        "decoded_state": decoded_state,
+        "decoded_bits": decoded_bits,
+        "decoding_confidence": decoding_confidence,
+        "is_correct": is_correct,
+    }
 
 
 def run_simple_simulation(params):
