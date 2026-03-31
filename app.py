@@ -1,6 +1,10 @@
+
 import math
 import random
 
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import streamlit as st
 from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
@@ -107,52 +111,17 @@ CLICK_ZONES = {
     "channel_2": {"x1": 582, "x2": 640, "y1": 205, "y2": 240},
     "channel_3": {"x1": 582, "x2": 640, "y1": 260, "y2": 303},
     "channel_4": {"x1": 366, "x2": 630, "y1": 367, "y2": 421},
-
     "detector_1": {"x1": 822, "x2": 918, "y1": 60, "y2": 150},
     "detector_2": {"x1": 822, "x2": 918, "y1": 150, "y2": 250},
     "detector_3": {"x1": 822, "x2": 918, "y1": 250, "y2": 340},
     "detector_4": {"x1": 822, "x2": 918, "y1": 350, "y2": 450},
-
     "pr_1": {"x1": 640, "x2": 670, "y1": 73, "y2": 134},
     "pr_2": {"x1": 640, "x2": 670, "y1": 181, "y2": 240},
     "pr_3": {"x1": 640, "x2": 670, "y1": 240, "y2": 300},
     "pr_4": {"x1": 640, "x2": 670, "y1": 367, "y2": 421},
-
     "bs_left": {"x1": 87, "x2": 140, "y1": 236, "y2": 265},
     "bs_right": {"x1": 526, "x2": 600, "y1": 239, "y2": 257},
-
     "source": {"x1": 38, "x2": 92, "y1": 161, "y2": 219},
-}
-
-# ============================================================
-# Article-inspired states
-# ============================================================
-
-ARTICLE_STATES = {
-    "psi1": [
-        {"channel_1": "y", "channel_2": "x", "channel_3": "y", "channel_4": "x"},
-        {"channel_1": "x", "channel_2": "y", "channel_3": "x", "channel_4": "y"},
-        {"channel_1": "x", "channel_2": "x", "channel_3": "y", "channel_4": "y"},
-        {"channel_1": "y", "channel_2": "y", "channel_3": "x", "channel_4": "x"},
-    ],
-    "psi2": [
-        {"channel_1": "y", "channel_2": "x", "channel_3": "y", "channel_4": "y"},
-        {"channel_1": "x", "channel_2": "y", "channel_3": "x", "channel_4": "x"},
-        {"channel_1": "x", "channel_2": "x", "channel_3": "y", "channel_4": "x"},
-        {"channel_1": "y", "channel_2": "y", "channel_3": "x", "channel_4": "y"},
-    ],
-    "psi3": [
-        {"channel_1": "y", "channel_2": "y", "channel_3": "y", "channel_4": "y"},
-        {"channel_1": "x", "channel_2": "x", "channel_3": "x", "channel_4": "x"},
-        {"channel_1": "x", "channel_2": "y", "channel_3": "y", "channel_4": "x"},
-        {"channel_1": "y", "channel_2": "x", "channel_3": "x", "channel_4": "y"},
-    ],
-    "psi4": [
-        {"channel_1": "y", "channel_2": "y", "channel_3": "y", "channel_4": "x"},
-        {"channel_1": "x", "channel_2": "x", "channel_3": "x", "channel_4": "y"},
-        {"channel_1": "x", "channel_2": "y", "channel_3": "y", "channel_4": "y"},
-        {"channel_1": "y", "channel_2": "x", "channel_3": "x", "channel_4": "x"},
-    ],
 }
 
 # ============================================================
@@ -185,7 +154,6 @@ def draw_highlight_on_scheme(image: Image.Image, selected: str, zones: dict) -> 
     if selected in zones:
         zone = zones[selected]
         x1, y1, x2, y2 = zone["x1"], zone["y1"], zone["x2"], zone["y2"]
-
         draw.rectangle([x1, y1, x2, y2], outline="red", width=4)
         draw.rectangle([x1 + 2, y1 + 2, x2 - 2, y2 - 2], outline="yellow", width=2)
 
@@ -199,22 +167,20 @@ def polarization_label_to_angle(label: str) -> float:
         return 90.0
     raise ValueError(f"Unknown polarization label: {label}")
 
-import numpy as np
+
+def quantum_measurement_probability(state_angle_deg: float, pr_angle_deg: float, pr_error: float) -> float:
+    effective_pr_angle = pr_angle_deg + random.uniform(-pr_error * 180.0, pr_error * 180.0)
+    angle_diff_rad = math.radians(state_angle_deg - effective_pr_angle)
+    probability = math.cos(angle_diff_rad) ** 2
+    return max(0.0, min(1.0, probability))
 
 
 def ket_index(bits):
-    """
-    bits: tuple/list of 4 bits, e.g. (1,0,1,0)
-    """
     b1, b2, b3, b4 = bits
     return (b1 << 3) | (b2 << 2) | (b3 << 1) | b4
 
 
 def basis_ket(bits):
-    """
-    Return computational basis ket in C^16 for 4 qubits.
-    x -> 0, y -> 1
-    """
     vec = np.zeros(16, dtype=float)
     vec[ket_index(bits)] = 1.0
     return vec
@@ -226,32 +192,8 @@ def normalize_state(vec):
         return vec
     return vec / norm
 
-def article_state_channel_probability(state_label: str, channel_name: str, pr_angle_deg: float, pr_error: float) -> float:
-    """
-    Average measurement probability over all components of the selected article state.
-    This is closer to the idea of superposition than choosing one random component.
-    """
-    components = ARTICLE_STATES[state_label]
-
-    probabilities = []
-    for component in components:
-        state_angle = polarization_label_to_angle(component[channel_name])
-        p = quantum_measurement_probability(
-            state_angle_deg=state_angle,
-            pr_angle_deg=pr_angle_deg,
-            pr_error=pr_error,
-        )
-        probabilities.append(p)
-
-    return sum(probabilities) / len(probabilities)
 
 def build_article_state_vectors():
-    """
-    Real 4-qubit vectors based on the article-style x/y components.
-    x = |0>, y = |1>
-    Equal amplitudes 1/2 on 4 basis terms.
-    """
-
     x = 0
     y = 1
 
@@ -293,91 +235,16 @@ def build_article_state_vectors():
 
 ARTICLE_STATE_VECTORS = build_article_state_vectors()
 
-def state_vector_to_density_matrix(state_vector):
-    return np.outer(state_vector, state_vector)
+ARTICLE_STATES = {
+    "psi1": "ψ1 = 1/2 (|y1x2y3x4⟩ + |x1y2x3y4⟩ + |x1x2y3y4⟩ + |y1y2x3x4⟩) ≡ 00",
+    "psi2": "ψ2 = 1/2 (|y1x2y3y4⟩ + |x1y2x3x4⟩ + |x1x2y3x4⟩ + |y1y2x3y4⟩) ≡ 01",
+    "psi3": "ψ3 = 1/2 (|y1y2y3y4⟩ + |x1x2x3x4⟩ + |x1y2y3x4⟩ + |y1x2x3y4⟩) ≡ 10",
+    "psi4": "ψ4 = 1/2 (|y1y2y3x4⟩ + |x1x2x3y4⟩ + |x1y2y3y4⟩ + |y1x2x3x4⟩) ≡ 11",
+}
 
 
 def reduced_density_matrix_one_qubit(state_vector, qubit_index):
-    """
-    Return 2x2 reduced density matrix for one qubit from a 4-qubit pure state.
-    qubit_index in {0,1,2,3}
-    """
     psi_tensor = state_vector.reshape(2, 2, 2, 2)
-    rho = np.tensordot(psi_tensor, psi_tensor, axes=([q for q in range(4) if q != qubit_index],
-                                                     [q for q in range(4) if q != qubit_index]))
-    return rho
-
-
-def projector_for_angle(angle_deg, pr_error):
-    """
-    Measurement projector |theta><theta|
-    with optional small random angle shift due to PR error.
-    """
-    effective_angle = angle_deg + random.uniform(-pr_error * 180.0, pr_error * 180.0)
-    theta = math.radians(effective_angle)
-
-    ket_theta = np.array([
-        math.cos(theta),
-        math.sin(theta)
-    ], dtype=float)
-
-    return np.outer(ket_theta, ket_theta)
-
-def build_article_state_vectors():
-    """
-    Real 4-qubit vectors based on the article-style x/y components.
-    x = |0>, y = |1>
-    Equal amplitudes 1/2 on 4 basis terms.
-    """
-
-    x = 0
-    y = 1
-
-    psi1 = (
-        basis_ket((y, x, y, x)) +
-        basis_ket((x, y, x, y)) +
-        basis_ket((x, x, y, y)) +
-        basis_ket((y, y, x, x))
-    ) / 2.0
-
-    psi2 = (
-        basis_ket((y, x, y, y)) +
-        basis_ket((x, y, x, x)) +
-        basis_ket((x, x, y, x)) +
-        basis_ket((y, y, x, y))
-    ) / 2.0
-
-    psi3 = (
-        basis_ket((y, y, y, y)) +
-        basis_ket((x, x, x, x)) +
-        basis_ket((x, y, y, x)) +
-        basis_ket((y, x, x, y))
-    ) / 2.0
-
-    psi4 = (
-        basis_ket((y, y, y, x)) +
-        basis_ket((x, x, x, y)) +
-        basis_ket((x, y, y, y)) +
-        basis_ket((y, x, x, x))
-    ) / 2.0
-
-    return {
-        "psi1": normalize_state(psi1),
-        "psi2": normalize_state(psi2),
-        "psi3": normalize_state(psi3),
-        "psi4": normalize_state(psi4),
-    }
-
-
-ARTICLE_STATE_VECTORS = build_article_state_vectors()
-
-def reduced_density_matrix_one_qubit(state_vector, qubit_index):
-    """
-    Return 2x2 reduced density matrix for one qubit from a 4-qubit pure state.
-    qubit_index in {0,1,2,3}
-    """
-    psi_tensor = state_vector.reshape(2, 2, 2, 2)
-
     rho = np.tensordot(
         psi_tensor,
         psi_tensor,
@@ -390,10 +257,6 @@ def reduced_density_matrix_one_qubit(state_vector, qubit_index):
 
 
 def projector_for_angle(angle_deg, pr_error):
-    """
-    Measurement projector |theta><theta|
-    with optional small random angle shift due to PR error.
-    """
     effective_angle = angle_deg + random.uniform(-pr_error * 180.0, pr_error * 180.0)
     theta = math.radians(effective_angle)
 
@@ -406,9 +269,6 @@ def projector_for_angle(angle_deg, pr_error):
 
 
 def article_state_channel_probability_vector(state_label, channel_name, pr_angle_deg, pr_error):
-    """
-    Quantum probability from true 4-qubit vector state via reduced density matrix.
-    """
     state_vector = ARTICLE_STATE_VECTORS[state_label]
 
     channel_to_qubit = {
@@ -425,35 +285,317 @@ def article_state_channel_probability_vector(state_label, channel_name, pr_angle
     probability = float(np.trace(rho_i @ projector))
     return max(0.0, min(1.0, probability))
 
-def article_state_channel_probability_vector(state_label, channel_name, pr_angle_deg, pr_error):
-    """
-    Quantum probability from true 4-qubit vector state via reduced density matrix.
-    """
-    state_vector = ARTICLE_STATE_VECTORS[state_label]
 
-    channel_to_qubit = {
-        "channel_1": 0,
-        "channel_2": 1,
-        "channel_3": 2,
-        "channel_4": 3,
+def orthogonal_ket_for_angle(angle_deg):
+    theta = math.radians(angle_deg)
+    return np.array([
+        -math.sin(theta),
+        math.cos(theta)
+    ], dtype=float)
+
+
+def ket_for_angle(angle_deg):
+    theta = math.radians(angle_deg)
+    return np.array([
+        math.cos(theta),
+        math.sin(theta)
+    ], dtype=float)
+
+
+def effective_pr_angles_for_packet(params):
+    pr_names = ["pr_1", "pr_2", "pr_3", "pr_4"]
+    effective_angles = {}
+
+    for idx, pr_name in enumerate(pr_names, start=1):
+        pr = params["pr"][pr_name]
+        effective_angle = pr["angle"] + random.uniform(-pr["error"] * 180.0, pr["error"] * 180.0)
+        effective_angles[f"channel_{idx}"] = effective_angle
+
+    return effective_angles
+
+
+def local_projector(angle_deg, click_value):
+    if click_value == 1:
+        ket = ket_for_angle(angle_deg)
+    else:
+        ket = orthogonal_ket_for_angle(angle_deg)
+
+    return np.outer(ket, ket)
+
+
+def kron4(a, b, c, d):
+    return np.kron(np.kron(np.kron(a, b), c), d)
+
+
+def joint_pattern_probabilities(state_vector, effective_angles):
+    probs = {}
+    rho = np.outer(state_vector, state_vector)
+
+    for c1 in [0, 1]:
+        for c2 in [0, 1]:
+            for c3 in [0, 1]:
+                for c4 in [0, 1]:
+                    P1 = local_projector(effective_angles["channel_1"], c1)
+                    P2 = local_projector(effective_angles["channel_2"], c2)
+                    P3 = local_projector(effective_angles["channel_3"], c3)
+                    P4 = local_projector(effective_angles["channel_4"], c4)
+
+                    joint_projector = kron4(P1, P2, P3, P4)
+                    prob = float(np.trace(rho @ joint_projector))
+                    prob = max(0.0, prob)
+
+                    probs[(c1, c2, c3, c4)] = prob
+
+    total = sum(probs.values())
+    if total > 0:
+        probs = {k: v / total for k, v in probs.items()}
+
+    return probs
+
+
+def sample_joint_pattern(prob_dict):
+    patterns = list(prob_dict.keys())
+    probabilities = list(prob_dict.values())
+    index = np.random.choice(len(patterns), p=probabilities)
+    return patterns[index]
+
+
+def decode_state_from_pattern(observed_pattern, effective_angles):
+    best_state = None
+    best_prob = -1.0
+
+    for state_label, state_vector in ARTICLE_STATE_VECTORS.items():
+        probs = joint_pattern_probabilities(state_vector, effective_angles)
+        p = probs.get(tuple(observed_pattern), 0.0)
+
+        if p > best_prob:
+            best_prob = p
+            best_state = state_label
+
+    return best_state, best_prob
+
+
+def clone_params_without_eve(params):
+    cloned = {
+        "source": {
+            "message": params["source"]["message"],
+            "num_packets": params["source"]["num_packets"],
+            "pair_generation_efficiency": params["source"]["pair_generation_efficiency"],
+            "mode": params["source"]["mode"],
+            "article_state_label": params["source"]["article_state_label"],
+            "selected_state_label": params["source"]["selected_state_label"],
+            "state_angles": params["source"]["state_angles"].copy(),
+        },
+        "channels": {},
+        "pr": {},
+        "detectors": {},
+        "beam_splitters": {},
     }
 
-    qubit_index = channel_to_qubit[channel_name]
-    rho_i = reduced_density_matrix_one_qubit(state_vector, qubit_index)
-    projector = projector_for_angle(pr_angle_deg, pr_error)
+    for ch_name, ch_data in params["channels"].items():
+        cloned["channels"][ch_name] = {
+            "loss": ch_data["loss"],
+            "eve": False,
+            "eve_disturbance": ch_data["eve_disturbance"],
+        }
 
-    probability = float(np.trace(rho_i @ projector))
-    return max(0.0, min(1.0, probability))
+    for pr_name, pr_data in params["pr"].items():
+        cloned["pr"][pr_name] = pr_data.copy()
 
-def quantum_measurement_probability(state_angle_deg: float, pr_angle_deg: float, pr_error: float) -> float:
-    """
-    Malus-like law:
-    P = cos^2(theta_state - theta_PR_effective)
-    """
-    effective_pr_angle = pr_angle_deg + random.uniform(-pr_error * 180.0, pr_error * 180.0)
-    angle_diff_rad = math.radians(state_angle_deg - effective_pr_angle)
-    probability = math.cos(angle_diff_rad) ** 2
-    return max(0.0, min(1.0, probability))
+    for det_name, det_data in params["detectors"].items():
+        cloned["detectors"][det_name] = det_data.copy()
+
+    for bs_name, bs_data in params["beam_splitters"].items():
+        cloned["beam_splitters"][bs_name] = bs_data.copy()
+
+    return cloned
+
+
+def plot_confusion_heatmap(confusion_percent_df):
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    matrix = confusion_percent_df.values
+    im = ax.imshow(matrix, aspect="auto")
+
+    ax.set_xticks(range(len(confusion_percent_df.columns)))
+    ax.set_xticklabels(confusion_percent_df.columns)
+
+    ax.set_yticks(range(len(confusion_percent_df.index)))
+    ax.set_yticklabels(confusion_percent_df.index)
+
+    ax.set_xlabel("Decoded state")
+    ax.set_ylabel("Sent state")
+    ax.set_title("Confusion Matrix Heatmap (%)")
+
+    for i in range(matrix.shape[0]):
+        for j in range(matrix.shape[1]):
+            ax.text(j, i, f"{matrix[i, j]:.1f}", ha="center", va="center")
+
+    fig.colorbar(im, ax=ax)
+    fig.tight_layout()
+    return fig
+
+
+def plot_difference_heatmap(diff_df):
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    matrix = diff_df.values
+    im = ax.imshow(matrix, aspect="auto", vmin=-100, vmax=100, cmap="bwr")
+
+    ax.set_xticks(range(len(diff_df.columns)))
+    ax.set_xticklabels(diff_df.columns)
+
+    ax.set_yticks(range(len(diff_df.index)))
+    ax.set_yticklabels(diff_df.index)
+
+    ax.set_xlabel("Decoded state")
+    ax.set_ylabel("Sent state")
+    ax.set_title("Difference Heatmap: With Eve - Without Eve (%)")
+
+    for i in range(matrix.shape[0]):
+        for j in range(matrix.shape[1]):
+            ax.text(j, i, f"{matrix[i, j]:.1f}", ha="center", va="center")
+
+    fig.colorbar(im, ax=ax)
+    fig.tight_layout()
+    return fig
+
+
+def generate_text_analysis(result_no_eve, result_attack):
+    lines = []
+
+    source_mode = result_attack["source_mode"]
+    selected_state = result_attack["selected_state_label"]
+
+    detected_no_eve = result_no_eve["detected"]
+    detected_attack = result_attack["detected"]
+
+    errors_no_eve = result_no_eve["errors"]
+    errors_attack = result_attack["errors"]
+
+    success_no_eve = result_no_eve["success_rate"]
+    success_attack = result_attack["success_rate"]
+
+    qber_no_eve = result_no_eve["qber"]
+    qber_attack = result_attack["qber"]
+
+    delta_detected = detected_attack - detected_no_eve
+    delta_errors = errors_attack - errors_no_eve
+    delta_success = success_attack - success_no_eve
+    delta_qber = qber_attack - qber_no_eve
+
+    lines.append("### Textual analysis of results")
+    lines.append("")
+    lines.append(
+        f"The simulation was run in **{source_mode}** mode"
+        + (f" with source state **{selected_state}**." if source_mode == "article_state" else ".")
+    )
+    lines.append("")
+
+    lines.append("**1. Detection efficiency**")
+    if detected_attack > detected_no_eve:
+        lines.append(
+            f"With Eve, the number of detected packets increased from **{detected_no_eve}** to **{detected_attack}** "
+            f"(change: **{delta_detected:+d}**). "
+            "This may happen in the current simplified model because Eve-induced disturbance and detector dark counts "
+            "can create additional clicks."
+        )
+    elif detected_attack < detected_no_eve:
+        lines.append(
+            f"With Eve, the number of detected packets decreased from **{detected_no_eve}** to **{detected_attack}** "
+            f"(change: **{delta_detected:+d}**). "
+            "This indicates that the attack reduces the probability of preserving the expected multi-photon detection pattern."
+        )
+    else:
+        lines.append(
+            f"The number of detected packets stayed the same: **{detected_no_eve}**."
+        )
+
+    lines.append("")
+
+    lines.append("**2. Error behaviour / QBER**")
+    if qber_attack > qber_no_eve:
+        lines.append(
+            f"The QBER increased from **{qber_no_eve:.3f}** to **{qber_attack:.3f}** "
+            f"(change: **{delta_qber:+.3f}**), and the number of errors changed from "
+            f"**{errors_no_eve}** to **{errors_attack}** (**{delta_errors:+d}**). "
+            "This means that Eve makes the decoded result less consistent with the sent state."
+        )
+    elif qber_attack < qber_no_eve:
+        lines.append(
+            f"The QBER decreased from **{qber_no_eve:.3f}** to **{qber_attack:.3f}** "
+            f"(change: **{delta_qber:+.3f}**). "
+            "For a realistic attack this is unusual, so this would most likely indicate that the current simplified stochastic model "
+            "and finite sampling fluctuations dominate the result."
+        )
+    else:
+        lines.append(
+            f"The QBER remained unchanged at **{qber_attack:.3f}**."
+        )
+
+    lines.append("")
+
+    lines.append("**3. Success rate**")
+    if success_attack > success_no_eve:
+        lines.append(
+            f"The success rate increased from **{success_no_eve:.3f}** to **{success_attack:.3f}** "
+            f"(change: **{delta_success:+.3f}**). "
+            "In the present model this can occur because 'success' is defined through detection events, "
+            "not yet through the full protocol logic from the article."
+        )
+    elif success_attack < success_no_eve:
+        lines.append(
+            f"The success rate decreased from **{success_no_eve:.3f}** to **{success_attack:.3f}** "
+            f"(change: **{delta_success:+.3f}**). "
+            "This is consistent with the idea that disturbance in the channel worsens transmission quality."
+        )
+    else:
+        lines.append(
+            f"The success rate remained the same at **{success_attack:.3f}**."
+        )
+
+    lines.append("")
+
+    if source_mode == "article_state":
+        lines.append("**4. State decoding interpretation**")
+        lines.append(
+            "In article-state mode, the main physically meaningful result is not only the total number of clicks, "
+            "but also how often the received multi-detector click pattern is decoded back into the original sent state."
+        )
+
+        confusion_attack_df = pd.DataFrame(result_attack["confusion_matrix"]).T
+        row_sums_attack = confusion_attack_df.sum(axis=1).replace(0, 1)
+        confusion_attack_percent_df = (confusion_attack_df.div(row_sums_attack, axis=0) * 100)
+
+        if selected_state in confusion_attack_percent_df.index:
+            row = confusion_attack_percent_df.loc[selected_state]
+            best_decoded = row.idxmax()
+            best_value = row.max()
+
+            lines.append(
+                f"For the sent state **{selected_state}**, the most frequent decoded state was "
+                f"**{best_decoded}** with probability about **{best_value:.1f}%**."
+            )
+
+            if best_decoded == selected_state:
+                lines.append(
+                    "So the dominant decoding channel is still correct."
+                )
+            else:
+                lines.append(
+                    "So the dominant decoding channel is already shifted to another state, "
+                    "which is a strong sign of disturbance."
+                )
+
+    lines.append("")
+    lines.append("**5. Relation to the article**")
+    lines.append(
+        "At this stage, the application is functioning as a simplified transmission model based on the article’s 4-photon state structure, "
+        "4 channels, polarization rotations, detector efficiencies, and channel disturbance. "
+        "It is not yet implementing the full communication protocol with time-of-arrival control and channel-order key logic."
+    )
+
+    return "\n".join(lines)
 
 
 def run_simple_simulation(params):
@@ -473,8 +615,22 @@ def run_simple_simulation(params):
     ]
 
     channel_names = ["channel_1", "channel_2", "channel_3", "channel_4"]
-    pr_names = ["pr_1", "pr_2", "pr_3", "pr_4"]
     detector_names = ["detector_1", "detector_2", "detector_3", "detector_4"]
+
+    decoded_state_counts = {
+        "psi1": 0,
+        "psi2": 0,
+        "psi3": 0,
+        "psi4": 0,
+        "manual": 0,
+    }
+
+    confusion_matrix = {
+        "psi1": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
+        "psi2": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
+        "psi3": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
+        "psi4": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
+    }
 
     for _ in range(num_packets):
         if random.random() > pair_eff:
@@ -485,51 +641,89 @@ def run_simple_simulation(params):
         packet_detected = False
         packet_error = False
 
-        for channel_name, pr_name, detector_name in zip(channel_names, pr_names, detector_names):
-            channel = params["channels"][channel_name]
-            pr = params["pr"][pr_name]
-            detector = params["detectors"][detector_name]
+        if source_mode == "article_state" and selected_state_label in ARTICLE_STATE_VECTORS:
+            state_vector = ARTICLE_STATE_VECTORS[selected_state_label]
+            effective_angles = effective_pr_angles_for_packet(params)
+            joint_probs = joint_pattern_probabilities(state_vector, effective_angles)
+            ideal_pattern = sample_joint_pattern(joint_probs)
 
-            # 1. Channel loss
-            if random.random() < channel["loss"]:
-                continue
+            observed_pattern = []
 
-            # 2. Quantum probability
-            if source_mode == "article_state" and selected_state_label in ARTICLE_STATE_VECTORS:
-                p_quantum = article_state_channel_probability_vector(
-                    state_label=selected_state_label,
-                    channel_name=channel_name,
-                    pr_angle_deg=pr["angle"],
-                    pr_error=pr["error"],
-                )
-            else:
+            for idx, (channel_name, detector_name) in enumerate(zip(channel_names, detector_names)):
+                channel = params["channels"][channel_name]
+                detector = params["detectors"][detector_name]
+
+                ideal_click = ideal_pattern[idx]
+
+                if random.random() < channel["loss"]:
+                    click = 1 if random.random() < detector["dark"] else 0
+                else:
+                    if ideal_click == 1:
+                        click = 1 if random.random() < detector["eta"] else 0
+                    else:
+                        click = 0
+
+                    if click == 0 and random.random() < detector["dark"]:
+                        click = 1
+
+                if channel["eve"]:
+                    if random.random() < channel.get("eve_disturbance", 0.0):
+                        click = 1 - click
+
+                observed_pattern.append(click)
+
+            packet_detected = any(observed_pattern)
+
+            if packet_detected:
+                decoded_state, _ = decode_state_from_pattern(observed_pattern, effective_angles)
+                decoded_state_counts[decoded_state] += 1
+                confusion_matrix[selected_state_label][decoded_state] += 1
+
+                if decoded_state != selected_state_label:
+                    packet_error = True
+
+        else:
+            for idx, channel_name in enumerate(channel_names, start=1):
+                pr_name = f"pr_{idx}"
+                detector_name = f"detector_{idx}"
+
+                channel = params["channels"][channel_name]
+                pr = params["pr"][pr_name]
+                detector = params["detectors"][detector_name]
+
+                if random.random() < channel["loss"]:
+                    continue
+
                 channel_state_angle = params["source"]["state_angles"][channel_name]
+
                 p_quantum = quantum_measurement_probability(
                     state_angle_deg=channel_state_angle,
                     pr_angle_deg=pr["angle"],
                     pr_error=pr["error"],
                 )
 
-            # 3. Eve disturbance
-            eve_disturbance = channel.get("eve_disturbance", 0.0) if channel["eve"] else 0.0
+                eve_disturbance = channel.get("eve_disturbance", 0.0) if channel["eve"] else 0.0
 
-            # 4. Detector click
-            p_click = p_quantum * detector["eta"]
-            click = random.random() < p_click
+                p_click = p_quantum * detector["eta"]
+                click = random.random() < p_click
 
-            # 5. Dark counts
-            if not click and random.random() < detector["dark"]:
-                click = True
+                if not click and random.random() < detector["dark"]:
+                    click = True
 
-            if click:
-                packet_detected = True
+                if channel["eve"] and random.random() < eve_disturbance:
+                    click = not click
 
-                # 6. Error model
-                basis_error = 1.0 - p_quantum
-                local_error_probability = min(1.0, basis_error + eve_disturbance)
+                if click:
+                    packet_detected = True
 
-                if random.random() < local_error_probability:
-                    packet_error = True
+                    basis_error = 1.0 - p_quantum
+                    local_error_probability = min(1.0, basis_error + eve_disturbance)
+
+                    if random.random() < local_error_probability:
+                        packet_error = True
+
+            if packet_detected:
+                decoded_state_counts["manual"] += 1
 
         if packet_detected:
             detected += 1
@@ -550,7 +744,11 @@ def run_simple_simulation(params):
         "eve_channels": active_eve_channels,
         "selected_state_label": selected_state_label,
         "source_mode": source_mode,
+        "decoded_state_counts": decoded_state_counts,
+        "confusion_matrix": confusion_matrix,
     }
+
+
 # ============================================================
 # Display scheme
 # ============================================================
@@ -810,20 +1008,91 @@ st.divider()
 st.subheader("Simulation")
 
 if st.button("Run simulation"):
-    result = run_simple_simulation(params)
+    result_attack = run_simple_simulation(params)
+    params_no_eve = clone_params_without_eve(params)
+    result_no_eve = run_simple_simulation(params_no_eve)
 
     st.success("Simulation complete")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Packets launched", result["num_packets"])
-    col2.metric("Packets detected", result["detected"])
-    col3.metric("Errors", result["errors"])
+    st.subheader("Comparison: without Eve vs with Eve")
 
     col1, col2 = st.columns(2)
-    col1.metric("Success rate", f"{result['success_rate']:.3f}")
-    col2.metric("QBER", f"{result['qber']:.3f}")
 
-    st.write("Message:", result["message"])
-    st.write("Active Eve channels:", result["eve_channels"])
-    st.write("Source mode:", result["source_mode"])
-    st.write("Selected source state:", result["selected_state_label"])
+    with col1:
+        st.markdown("### Without Eve")
+        st.metric("Packets detected", result_no_eve["detected"])
+        st.metric("Errors", result_no_eve["errors"])
+        st.metric("Success rate", f"{result_no_eve['success_rate']:.3f}")
+        st.metric("QBER", f"{result_no_eve['qber']:.3f}")
+
+    with col2:
+        st.markdown("### With Eve")
+        st.metric("Packets detected", result_attack["detected"])
+        st.metric("Errors", result_attack["errors"])
+        st.metric("Success rate", f"{result_attack['success_rate']:.3f}")
+        st.metric("QBER", f"{result_attack['qber']:.3f}")
+
+    st.write("Message:", result_attack["message"])
+    st.write("Source mode:", result_attack["source_mode"])
+    st.write("Selected source state:", result_attack["selected_state_label"])
+    st.write("Active Eve channels:", result_attack["eve_channels"])
+
+    if result_attack["source_mode"] == "article_state":
+        st.subheader("Confusion Matrix Comparison")
+
+        confusion_no_eve_df = pd.DataFrame(result_no_eve["confusion_matrix"]).T
+        confusion_no_eve_df.index.name = "Sent state"
+        confusion_no_eve_df.columns.name = "Decoded state"
+
+        confusion_attack_df = pd.DataFrame(result_attack["confusion_matrix"]).T
+        confusion_attack_df.index.name = "Sent state"
+        confusion_attack_df.columns.name = "Decoded state"
+
+        row_sums_no_eve = confusion_no_eve_df.sum(axis=1).replace(0, 1)
+        confusion_no_eve_percent_df = (confusion_no_eve_df.div(row_sums_no_eve, axis=0) * 100).round(2)
+
+        row_sums_attack = confusion_attack_df.sum(axis=1).replace(0, 1)
+        confusion_attack_percent_df = (confusion_attack_df.div(row_sums_attack, axis=0) * 100).round(2)
+
+        difference_df = (confusion_attack_percent_df - confusion_no_eve_percent_df).round(2)
+
+        tab1, tab2, tab3, tab4 = st.tabs(["Raw counts", "Percent tables", "Heatmaps", "Difference"])
+
+        with tab1:
+            left_raw, right_raw = st.columns(2)
+            with left_raw:
+                st.markdown("#### Without Eve")
+                st.dataframe(confusion_no_eve_df, use_container_width=True)
+            with right_raw:
+                st.markdown("#### With Eve")
+                st.dataframe(confusion_attack_df, use_container_width=True)
+
+        with tab2:
+            left_pct, right_pct = st.columns(2)
+            with left_pct:
+                st.markdown("#### Without Eve (%)")
+                st.dataframe(confusion_no_eve_percent_df, use_container_width=True)
+            with right_pct:
+                st.markdown("#### With Eve (%)")
+                st.dataframe(confusion_attack_percent_df, use_container_width=True)
+
+        with tab3:
+            left_heat, right_heat = st.columns(2)
+            with left_heat:
+                st.markdown("#### Without Eve")
+                fig1 = plot_confusion_heatmap(confusion_no_eve_percent_df)
+                st.pyplot(fig1)
+            with right_heat:
+                st.markdown("#### With Eve")
+                fig2 = plot_confusion_heatmap(confusion_attack_percent_df)
+                st.pyplot(fig2)
+
+        with tab4:
+            st.markdown("#### Difference: With Eve - Without Eve (%)")
+            st.dataframe(difference_df, use_container_width=True)
+
+            fig_diff = plot_difference_heatmap(difference_df)
+            st.pyplot(fig_diff)
+
+    analysis_text = generate_text_analysis(result_no_eve, result_attack)
+    st.markdown(analysis_text)
