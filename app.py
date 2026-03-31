@@ -242,6 +242,14 @@ ARTICLE_STATES = {
     "psi4": "ψ4 = 1/2 (|y1y2y3x4⟩ + |x1x2x3y4⟩ + |x1y2y3y4⟩ + |y1x2x3x4⟩) ≡ 11",
 }
 
+STATE_TO_BITS = {
+    "psi1": "00",
+    "psi2": "01",
+    "psi3": "10",
+    "psi4": "11",
+}
+
+BITS_TO_STATE = {bits: state for state, bits in STATE_TO_BITS.items()}
 
 def reduced_density_matrix_one_qubit(state_vector, qubit_index):
     psi_tensor = state_vector.reshape(2, 2, 2, 2)
@@ -267,6 +275,38 @@ def projector_for_angle(angle_deg, pr_error):
 
     return np.outer(ket_theta, ket_theta)
 
+def text_to_bitstring(text: str) -> str:
+    data = text.encode("utf-8")
+    return "".join(f"{byte:08b}" for byte in data)
+
+def bitstring_to_text(bitstring: str) -> str:
+    if not bitstring:
+        return ""
+
+    usable_length = (len(bitstring) // 8) * 8
+    trimmed = bitstring[:usable_length]
+
+    if not trimmed:
+        return ""
+
+    byte_values = [
+        int(trimmed[i:i + 8], 2)
+        for i in range(0, len(trimmed), 8)
+    ]
+
+    try:
+        return bytes(byte_values).decode("utf-8")
+    except UnicodeDecodeError:
+        return bytes(byte_values).decode("utf-8", errors="replace")
+
+def split_bits_into_pairs(bitstring: str) -> list[str]:
+    if len(bitstring) % 2 != 0:
+        bitstring += "0"
+
+    return [
+        bitstring[i:i + 2]
+        for i in range(0, len(bitstring), 2)
+    ]
 
 def article_state_channel_probability_vector(state_label, channel_name, pr_angle_deg, pr_error):
     state_vector = ARTICLE_STATE_VECTORS[state_label]
@@ -285,7 +325,18 @@ def article_state_channel_probability_vector(state_label, channel_name, pr_angle
     probability = float(np.trace(rho_i @ projector))
     return max(0.0, min(1.0, probability))
 
+def encode_text_to_states(text: str) -> dict:
+    bitstring = text_to_bitstring(text)
+    bit_pairs = split_bits_into_pairs(bitstring)
+    states = bit_pairs_to_states(bit_pairs)
 
+    return {
+        "text": text,
+        "bitstring": bitstring,
+        "bit_pairs": bit_pairs,
+        "states": states,
+    }
+    
 def orthogonal_ket_for_angle(angle_deg):
     theta = math.radians(angle_deg)
     return np.array([
