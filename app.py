@@ -1,4 +1,3 @@
-
 import math
 import random
 
@@ -73,7 +72,7 @@ if "scheme_params" not in st.session_state:
             "bs_right": {"loss": 0.02},
         },
         "simulation": {
-            "detection_mode": "any_click"
+            "detection_mode": "any_click",
         },
     }
 
@@ -102,6 +101,9 @@ if "article_state_label" not in params["source"]:
 
 if "selected_state_label" not in params["source"]:
     params["source"]["selected_state_label"] = "manual"
+
+if "simulation" not in params:
+    params["simulation"] = {"detection_mode": "any_click"}
 
 left_col, right_col = st.columns([2, 1])
 
@@ -254,6 +256,67 @@ STATE_TO_BITS = {
 
 BITS_TO_STATE = {bits: state for state, bits in STATE_TO_BITS.items()}
 
+
+def text_to_bitstring(text: str) -> str:
+    data = text.encode("utf-8")
+    return "".join(f"{byte:08b}" for byte in data)
+
+
+def bitstring_to_text(bitstring: str) -> str:
+    if not bitstring:
+        return ""
+
+    usable_length = (len(bitstring) // 8) * 8
+    trimmed = bitstring[:usable_length]
+
+    if not trimmed:
+        return ""
+
+    byte_values = [
+        int(trimmed[i:i + 8], 2)
+        for i in range(0, len(trimmed), 8)
+    ]
+
+    try:
+        return bytes(byte_values).decode("utf-8")
+    except UnicodeDecodeError:
+        return bytes(byte_values).decode("utf-8", errors="replace")
+
+
+def split_bits_into_pairs(bitstring: str) -> list[str]:
+    if len(bitstring) % 2 != 0:
+        bitstring += "0"
+
+    return [
+        bitstring[i:i + 2]
+        for i in range(0, len(bitstring), 2)
+    ]
+
+
+def bit_pairs_to_states(bit_pairs: list[str]) -> list[str]:
+    states = []
+
+    for pair in bit_pairs:
+        if pair not in BITS_TO_STATE:
+            raise ValueError(f"Unknown bit pair: {pair}")
+        states.append(BITS_TO_STATE[pair])
+
+    return states
+
+
+def encode_text_to_states(text: str) -> dict:
+    bitstring = text_to_bitstring(text)
+    bit_pairs = split_bits_into_pairs(bitstring)
+    states = bit_pairs_to_states(bit_pairs)
+
+    return {
+        "text": text,
+        "bitstring": bitstring,
+        "bit_pairs": bit_pairs,
+        "states": states,
+    }
+
+
 def reduced_density_matrix_one_qubit(state_vector, qubit_index):
     psi_tensor = state_vector.reshape(2, 2, 2, 2)
     rho = np.tensordot(
@@ -278,38 +341,6 @@ def projector_for_angle(angle_deg, pr_error):
 
     return np.outer(ket_theta, ket_theta)
 
-def text_to_bitstring(text: str) -> str:
-    data = text.encode("utf-8")
-    return "".join(f"{byte:08b}" for byte in data)
-
-def bitstring_to_text(bitstring: str) -> str:
-    if not bitstring:
-        return ""
-
-    usable_length = (len(bitstring) // 8) * 8
-    trimmed = bitstring[:usable_length]
-
-    if not trimmed:
-        return ""
-
-    byte_values = [
-        int(trimmed[i:i + 8], 2)
-        for i in range(0, len(trimmed), 8)
-    ]
-
-    try:
-        return bytes(byte_values).decode("utf-8")
-    except UnicodeDecodeError:
-        return bytes(byte_values).decode("utf-8", errors="replace")
-
-def split_bits_into_pairs(bitstring: str) -> list[str]:
-    if len(bitstring) % 2 != 0:
-        bitstring += "0"
-
-    return [
-        bitstring[i:i + 2]
-        for i in range(0, len(bitstring), 2)
-    ]
 
 def article_state_channel_probability_vector(state_label, channel_name, pr_angle_deg, pr_error):
     state_vector = ARTICLE_STATE_VECTORS[state_label]
@@ -328,18 +359,7 @@ def article_state_channel_probability_vector(state_label, channel_name, pr_angle
     probability = float(np.trace(rho_i @ projector))
     return max(0.0, min(1.0, probability))
 
-def encode_text_to_states(text: str) -> dict:
-    bitstring = text_to_bitstring(text)
-    bit_pairs = split_bits_into_pairs(bitstring)
-    states = bit_pairs_to_states(bit_pairs)
 
-    return {
-        "text": text,
-        "bitstring": bitstring,
-        "bit_pairs": bit_pairs,
-        "states": states,
-    }
-    
 def orthogonal_ket_for_angle(angle_deg):
     theta = math.radians(angle_deg)
     return np.array([
@@ -429,6 +449,103 @@ def decode_state_from_pattern(observed_pattern, effective_angles):
     return best_state, best_prob
 
 
+def apply_channel_and_detector_effects(
+    ideal_pattern: tuple,
+    params: dict
+) -> tuple:
+    channel_names = ["channel_1", "channel_2", "channel_3", "channel_4"]
+    detector_names = ["detector_1", "detector_2", "detector_3", "detector_4"]
+
+    observed_pattern = []
+
+    for idx, (channel_name, detector_name) in enumerate(zip(channel_names, detector_names)):
+        channel = params["channels"][channel_name]
+        detector = params["detectors"][detector_name]
+
+        ideal_click = ideal_pattern[idx]
+
+        total_loss = channel["loss"]
+
+        if channel_name in ["channel_2", "channel_3"]:
+            total_loss = min(1.0, total_loss + params["beam_splitters"]["bs_right"]["loss"])
+        else:
+            total_loss = min(1.0, total_loss + params["beam_splitters"]["bs_left"]["loss"])
+
+        if random.random() < total_loss:
+            click = 1 if random.random() < detector["dark"] else 0
+        else:
+            if ideal_click == 1:
+                click = 1 if random.random() < detector["eta"] else 0
+            else:
+                click = 0
+
+            if click == 0 and random.random() < detector["dark"]:
+                click = 1
+
+        if channel["eve"]:
+            if random.random() < channel.get("eve_disturbance", 0.0):
+                click = 1 - click
+
+        observed_pattern.append(click)
+
+    return tuple(observed_pattern)
+
+
+def is_informative_detection(pattern: tuple, mode: str = "any_click") -> bool:
+    if mode == "any_click":
+        return any(pattern)
+
+    if mode == "fourfold":
+        return all(click == 1 for click in pattern)
+
+    raise ValueError(f"Unknown detection mode: {mode}")
+
+
+def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
+    if state_label not in ARTICLE_STATE_VECTORS:
+        raise ValueError(f"Unknown article state: {state_label}")
+
+    detection_mode = params.get("simulation", {}).get("detection_mode", "any_click")
+
+    state_vector = ARTICLE_STATE_VECTORS[state_label]
+    sent_bits = STATE_TO_BITS[state_label]
+
+    effective_angles = effective_pr_angles_for_packet(params)
+    joint_probs = joint_pattern_probabilities(state_vector, effective_angles)
+    ideal_pattern = sample_joint_pattern(joint_probs)
+
+    observed_pattern = apply_channel_and_detector_effects(ideal_pattern, params)
+
+    packet_detected = is_informative_detection(observed_pattern, detection_mode)
+    was_lost = not packet_detected
+
+    decoded_state = None
+    decoded_bits = None
+    decoding_confidence = 0.0
+    is_correct = False
+
+    if packet_detected:
+        decoded_state, decoding_confidence = decode_state_from_pattern(
+            observed_pattern,
+            effective_angles,
+        )
+        decoded_bits = STATE_TO_BITS[decoded_state]
+        is_correct = decoded_state == state_label
+
+    return {
+        "sent_state": state_label,
+        "sent_bits": sent_bits,
+        "ideal_pattern": ideal_pattern,
+        "observed_pattern": observed_pattern,
+        "packet_detected": packet_detected,
+        "was_lost": was_lost,
+        "decoded_state": decoded_state,
+        "decoded_bits": decoded_bits,
+        "decoding_confidence": decoding_confidence,
+        "is_correct": is_correct,
+    }
+
+
 def clone_params_without_eve(params):
     cloned = {
         "source": {
@@ -444,6 +561,7 @@ def clone_params_without_eve(params):
         "pr": {},
         "detectors": {},
         "beam_splitters": {},
+        "simulation": params.get("simulation", {}).copy(),
     }
 
     for ch_name, ch_data in params["channels"].items():
@@ -651,59 +769,6 @@ def generate_text_analysis(result_no_eve, result_attack):
 
     return "\n".join(lines)
 
-def is_informative_detection(pattern: tuple, mode: str = "any_click") -> bool:
-    if mode == "any_click":
-        return any(pattern)
-
-    if mode == "fourfold":
-        return all(click == 1 for click in pattern)
-
-    raise ValueError(f"Unknown detection mode: {mode}")
-
-def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
-    if state_label not in ARTICLE_STATE_VECTORS:
-        raise ValueError(f"Unknown article state: {state_label}")
-
-    detection_mode = params.get("simulation", {}).get("detection_mode", "any_click")
-
-    state_vector = ARTICLE_STATE_VECTORS[state_label]
-    sent_bits = STATE_TO_BITS[state_label]
-
-    effective_angles = effective_pr_angles_for_packet(params)
-    joint_probs = joint_pattern_probabilities(state_vector, effective_angles)
-    ideal_pattern = sample_joint_pattern(joint_probs)
-
-    observed_pattern = apply_channel_and_detector_effects(ideal_pattern, params)
-
-    packet_detected = is_informative_detection(observed_pattern, detection_mode)
-    was_lost = not packet_detected
-
-    decoded_state = None
-    decoded_bits = None
-    decoding_confidence = 0.0
-    is_correct = False
-
-    if packet_detected:
-        decoded_state, decoding_confidence = decode_state_from_pattern(
-            observed_pattern,
-            effective_angles,
-        )
-        decoded_bits = STATE_TO_BITS[decoded_state]
-        is_correct = decoded_state == state_label
-
-    return {
-        "sent_state": state_label,
-        "sent_bits": sent_bits,
-        "ideal_pattern": ideal_pattern,
-        "observed_pattern": observed_pattern,
-        "packet_detected": packet_detected,
-        "was_lost": was_lost,
-        "decoded_state": decoded_state,
-        "decoded_bits": decoded_bits,
-        "decoding_confidence": decoding_confidence,
-        "is_correct": is_correct,
-    }
-
 
 def run_simple_simulation(params):
     message = params["source"]["message"]
@@ -722,7 +787,6 @@ def run_simple_simulation(params):
     ]
 
     channel_names = ["channel_1", "channel_2", "channel_3", "channel_4"]
-    detector_names = ["detector_1", "detector_2", "detector_3", "detector_4"]
 
     decoded_state_counts = {
         "psi1": 0,
@@ -749,44 +813,16 @@ def run_simple_simulation(params):
         packet_error = False
 
         if source_mode == "article_state" and selected_state_label in ARTICLE_STATE_VECTORS:
-            state_vector = ARTICLE_STATE_VECTORS[selected_state_label]
-            effective_angles = effective_pr_angles_for_packet(params)
-            joint_probs = joint_pattern_probabilities(state_vector, effective_angles)
-            ideal_pattern = sample_joint_pattern(joint_probs)
+            single_result = simulate_single_state_transmission(selected_state_label, params)
 
-            observed_pattern = []
-
-            for idx, (channel_name, detector_name) in enumerate(zip(channel_names, detector_names)):
-                channel = params["channels"][channel_name]
-                detector = params["detectors"][detector_name]
-
-                ideal_click = ideal_pattern[idx]
-
-                if random.random() < channel["loss"]:
-                    click = 1 if random.random() < detector["dark"] else 0
-                else:
-                    if ideal_click == 1:
-                        click = 1 if random.random() < detector["eta"] else 0
-                    else:
-                        click = 0
-
-                    if click == 0 and random.random() < detector["dark"]:
-                        click = 1
-
-                if channel["eve"]:
-                    if random.random() < channel.get("eve_disturbance", 0.0):
-                        click = 1 - click
-
-                observed_pattern.append(click)
-
-            packet_detected = any(observed_pattern)
+            packet_detected = single_result["packet_detected"]
 
             if packet_detected:
-                decoded_state, _ = decode_state_from_pattern(observed_pattern, effective_angles)
+                decoded_state = single_result["decoded_state"]
                 decoded_state_counts[decoded_state] += 1
                 confusion_matrix[selected_state_label][decoded_state] += 1
 
-                if decoded_state != selected_state_label:
+                if not single_result["is_correct"]:
                     packet_error = True
 
         else:
@@ -1105,6 +1141,19 @@ st.divider()
 
 with st.expander("Current Scheme Configuration"):
     st.json(params)
+
+with st.expander("Message encoding preview"):
+    preview_text = params["source"]["message"]
+    encoding_preview = encode_text_to_states(preview_text)
+
+    st.write("Original text:", encoding_preview["text"])
+    st.write("Bitstring:", encoding_preview["bitstring"])
+    st.write("Bit pairs:", encoding_preview["bit_pairs"])
+    st.write("Mapped states:", encoding_preview["states"])
+
+with st.expander("Single state transmission test"):
+    test_result = simulate_single_state_transmission("psi1", params)
+    st.json(test_result)
 
 st.divider()
 
