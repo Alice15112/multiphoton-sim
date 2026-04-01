@@ -330,6 +330,59 @@ def reduced_density_matrix_one_qubit(state_vector, qubit_index):
     return rho
 
 
+def compute_bit_error_rate(original_bits: str, recovered_bits_raw: str) -> dict:
+    recovered_bits = "".join(ch for ch in recovered_bits_raw if ch in "01")
+
+    comparable_length = min(len(original_bits), len(recovered_bits))
+
+    if comparable_length == 0:
+        return {
+            "bit_errors": 0,
+            "compared_bits": 0,
+            "ber": 0.0,
+        }
+
+    bit_errors = sum(
+        1
+        for i in range(comparable_length)
+        if original_bits[i] != recovered_bits[i]
+    )
+
+    ber = bit_errors / comparable_length
+
+    return {
+        "bit_errors": bit_errors,
+        "compared_bits": comparable_length,
+        "ber": ber,
+    }
+
+
+def compute_symbol_error_rate(results: list[dict]) -> dict:
+    detected_results = [r for r in results if r["packet_detected"]]
+
+    if not detected_results:
+        return {
+            "symbol_errors": 0,
+            "compared_symbols": 0,
+            "ser": 0.0,
+        }
+
+    symbol_errors = sum(
+        1
+        for r in detected_results
+        if not r["is_correct"]
+    )
+
+    compared_symbols = len(detected_results)
+    ser = symbol_errors / compared_symbols
+
+    return {
+        "symbol_errors": symbol_errors,
+        "compared_symbols": compared_symbols,
+        "ser": ser,
+    }
+
+
 def projector_for_angle(angle_deg, pr_error):
     effective_angle = angle_deg + random.uniform(-pr_error * 180.0, pr_error * 180.0)
     theta = math.radians(effective_angle)
@@ -340,6 +393,35 @@ def projector_for_angle(angle_deg, pr_error):
     ], dtype=float)
 
     return np.outer(ket_theta, ket_theta)
+
+
+def build_bit_comparison_table(bit_pairs: list[str], results: list[dict]) -> pd.DataFrame:
+    rows = []
+
+    for idx, (original_bits, result) in enumerate(zip(bit_pairs, results), start=1):
+        recovered_bits = result["decoded_bits"] if result["decoded_bits"] is not None else "??"
+
+        bit_errors = None
+        if recovered_bits != "??":
+            bit_errors = sum(
+                1
+                for a, b in zip(original_bits, recovered_bits)
+                if a != b
+            )
+
+        rows.append({
+            "index": idx,
+            "original_bits": original_bits,
+            "sent_state": result["sent_state"],
+            "observed_pattern": result["observed_pattern"],
+            "decoded_state": result["decoded_state"],
+            "recovered_bits": recovered_bits,
+            "bit_errors_in_symbol": bit_errors,
+            "symbol_correct": result["is_correct"],
+            "detected": result["packet_detected"],
+        })
+
+    return pd.DataFrame(rows)
 
 
 def article_state_channel_probability_vector(state_label, channel_name, pr_angle_deg, pr_error):
@@ -603,6 +685,8 @@ def recovered_bits_from_results(results: list[dict], fill_missing: str = "??") -
             recovered_chunks.append(result["decoded_bits"])
 
     return "".join(recovered_chunks)
+
+
 def keep_only_binary_chars(bitstring: str) -> str:
     return "".join(ch for ch in bitstring if ch in "01")
 
@@ -615,6 +699,13 @@ def build_message_transmission_summary(text: str, params: dict) -> dict:
     recovered_bits_clean = keep_only_binary_chars(recovered_bits_raw)
     recovered_text = bitstring_to_text(recovered_bits_clean)
 
+    ber_stats = compute_bit_error_rate(encoded["bitstring"], recovered_bits_raw)
+    ser_stats = compute_symbol_error_rate(sequence_result["results"])
+    bit_comparison_df = build_bit_comparison_table(
+        encoded["bit_pairs"],
+        sequence_result["results"],
+    )
+
     return {
         "original_text": text,
         "original_bitstring": encoded["bitstring"],
@@ -624,6 +715,9 @@ def build_message_transmission_summary(text: str, params: dict) -> dict:
         "recovered_bits_raw": recovered_bits_raw,
         "recovered_bits_clean": recovered_bits_clean,
         "recovered_text": recovered_text,
+        "ber_stats": ber_stats,
+        "ser_stats": ser_stats,
+        "bit_comparison_df": bit_comparison_df,
     }
 
 
@@ -850,9 +944,16 @@ def generate_text_analysis(result_no_eve, result_attack):
 
     return "\n".join(lines)
 
+
 def generate_message_level_analysis(summary_no_eve, summary_attack):
     seq_no_eve = summary_no_eve["sequence_result"]
     seq_attack = summary_attack["sequence_result"]
+
+    ber_no_eve = summary_no_eve["ber_stats"]["ber"]
+    ber_attack = summary_attack["ber_stats"]["ber"]
+
+    ser_no_eve = summary_no_eve["ser_stats"]["ser"]
+    ser_attack = summary_attack["ser_stats"]["ser"]
 
     lines = []
     lines.append("### Message-level analysis")
@@ -864,26 +965,25 @@ def generate_message_level_analysis(summary_no_eve, summary_attack):
     lines.append("**1. Detection statistics**")
     lines.append(
         f"Without Eve, **{seq_no_eve['total_detected']}** out of **{seq_no_eve['total_sent']}** "
-        f"2-bit blocks were detected "
-        f"(**{seq_no_eve['detection_rate']:.3f}**)."
+        f"2-bit blocks were detected (**{seq_no_eve['detection_rate']:.3f}**)."
     )
     lines.append(
         f"With Eve, **{seq_attack['total_detected']}** out of **{seq_attack['total_sent']}** "
-        f"2-bit blocks were detected "
-        f"(**{seq_attack['detection_rate']:.3f}**)."
+        f"2-bit blocks were detected (**{seq_attack['detection_rate']:.3f}**)."
     )
     lines.append("")
 
-    lines.append("**2. Symbol accuracy**")
-    lines.append(
-        f"Without Eve, symbol accuracy was **{seq_no_eve['symbol_accuracy']:.3f}**."
-    )
-    lines.append(
-        f"With Eve, symbol accuracy was **{seq_attack['symbol_accuracy']:.3f}**."
-    )
+    lines.append("**2. Symbol-level accuracy**")
+    lines.append(f"Without Eve, SER = **{ser_no_eve:.3f}**.")
+    lines.append(f"With Eve, SER = **{ser_attack:.3f}**.")
     lines.append("")
 
-    lines.append("**3. Losses**")
+    lines.append("**3. Bit-level accuracy**")
+    lines.append(f"Without Eve, BER = **{ber_no_eve:.3f}**.")
+    lines.append(f"With Eve, BER = **{ber_attack:.3f}**.")
+    lines.append("")
+
+    lines.append("**4. Losses**")
     lines.append(
         f"Without Eve, **{seq_no_eve['total_lost']}** blocks were lost "
         f"(**{seq_no_eve['loss_rate']:.3f}**)."
@@ -894,26 +994,27 @@ def generate_message_level_analysis(summary_no_eve, summary_attack):
     )
     lines.append("")
 
-    lines.append("**4. Recovered text**")
+    lines.append("**5. Recovered text**")
     lines.append(f"Without Eve: `{summary_no_eve['recovered_text']}`")
     lines.append(f"With Eve: `{summary_attack['recovered_text']}`")
     lines.append("")
 
-    if seq_attack["symbol_accuracy"] < seq_no_eve["symbol_accuracy"]:
+    if ber_attack > ber_no_eve:
         lines.append(
-            "Eve reduces the reliability of decoding the transmitted 2-bit quantum symbols."
+            "Eve increases the bit-level distortion of the transmitted message."
         )
-    elif seq_attack["symbol_accuracy"] > seq_no_eve["symbol_accuracy"]:
+    elif ber_attack < ber_no_eve:
         lines.append(
-            "The attack result appears better than the no-Eve case, which is usually a sign that finite sampling "
-            "or the simplified stochastic model still dominates the behaviour."
+            "In this run the attack appears to improve bit-level recovery, which is usually a sign that the simplified "
+            "stochastic model or finite sampling still dominates the result."
         )
     else:
         lines.append(
-            "The symbol accuracy stayed the same in this run."
+            "The bit-level error rate stayed unchanged in this run."
         )
 
     return "\n".join(lines)
+
 
 def run_simple_simulation(params):
     message = params["source"]["message"]
@@ -1315,6 +1416,8 @@ with st.expander("Message transmission test"):
     st.write("Detection rate:", f"{seq['detection_rate']:.3f}")
     st.write("Symbol accuracy:", f"{seq['symbol_accuracy']:.3f}")
     st.write("Loss rate:", f"{seq['loss_rate']:.3f}")
+    st.write("BER:", f"{message_result['ber_stats']['ber']:.3f}")
+    st.write("SER:", f"{message_result['ser_stats']['ser']:.3f}")
 
     st.write("Recovered bits raw:", message_result["recovered_bits_raw"])
     st.write("Recovered bits clean:", message_result["recovered_bits_clean"])
@@ -1322,6 +1425,7 @@ with st.expander("Message transmission test"):
 
     transmission_df = pd.DataFrame(seq["results"])
     st.dataframe(transmission_df, use_container_width=True)
+    st.dataframe(message_result["bit_comparison_df"], use_container_width=True)
 
 st.divider()
 
@@ -1449,6 +1553,8 @@ if st.button("Run simulation"):
         st.metric("Lost 2-bit blocks", seq_no_eve["total_lost"])
         st.metric("Detection rate", f"{seq_no_eve['detection_rate']:.3f}")
         st.metric("Symbol accuracy", f"{seq_no_eve['symbol_accuracy']:.3f}")
+        st.metric("BER", f"{message_no_eve['ber_stats']['ber']:.3f}")
+        st.metric("SER", f"{message_no_eve['ser_stats']['ser']:.3f}")
 
     with msg_col2:
         st.markdown("### With Eve")
@@ -1456,6 +1562,8 @@ if st.button("Run simulation"):
         st.metric("Lost 2-bit blocks", seq_attack["total_lost"])
         st.metric("Detection rate", f"{seq_attack['detection_rate']:.3f}")
         st.metric("Symbol accuracy", f"{seq_attack['symbol_accuracy']:.3f}")
+        st.metric("BER", f"{message_attack['ber_stats']['ber']:.3f}")
+        st.metric("SER", f"{message_attack['ser_stats']['ser']:.3f}")
 
     st.markdown("### Recovered text")
     st.write("Original text:", message_attack["original_text"])
@@ -1466,8 +1574,13 @@ if st.button("Run simulation"):
     st.write("Without Eve (raw):", message_no_eve["recovered_bits_raw"])
     st.write("With Eve (raw):", message_attack["recovered_bits_raw"])
 
-    msg_tab1, msg_tab2, msg_tab3 = st.tabs(
-        ["Transmission table: without Eve", "Transmission table: with Eve", "Message analysis"]
+    msg_tab1, msg_tab2, msg_tab3, msg_tab4 = st.tabs(
+        [
+            "Transmission table: without Eve",
+            "Transmission table: with Eve",
+            "Bit comparison",
+            "Message analysis",
+        ]
     )
 
     with msg_tab1:
@@ -1479,5 +1592,12 @@ if st.button("Run simulation"):
         st.dataframe(transmission_df_attack, use_container_width=True)
 
     with msg_tab3:
+        st.markdown("#### Without Eve")
+        st.dataframe(message_no_eve["bit_comparison_df"], use_container_width=True)
+
+        st.markdown("#### With Eve")
+        st.dataframe(message_attack["bit_comparison_df"], use_container_width=True)
+
+    with msg_tab4:
         message_analysis = generate_message_level_analysis(message_no_eve, message_attack)
         st.markdown(message_analysis)
