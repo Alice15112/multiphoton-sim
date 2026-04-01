@@ -850,6 +850,70 @@ def generate_text_analysis(result_no_eve, result_attack):
 
     return "\n".join(lines)
 
+def generate_message_level_analysis(summary_no_eve, summary_attack):
+    seq_no_eve = summary_no_eve["sequence_result"]
+    seq_attack = summary_attack["sequence_result"]
+
+    lines = []
+    lines.append("### Message-level analysis")
+    lines.append("")
+
+    lines.append(f"Original text: **{summary_attack['original_text']}**")
+    lines.append("")
+
+    lines.append("**1. Detection statistics**")
+    lines.append(
+        f"Without Eve, **{seq_no_eve['total_detected']}** out of **{seq_no_eve['total_sent']}** "
+        f"2-bit blocks were detected "
+        f"(**{seq_no_eve['detection_rate']:.3f}**)."
+    )
+    lines.append(
+        f"With Eve, **{seq_attack['total_detected']}** out of **{seq_attack['total_sent']}** "
+        f"2-bit blocks were detected "
+        f"(**{seq_attack['detection_rate']:.3f}**)."
+    )
+    lines.append("")
+
+    lines.append("**2. Symbol accuracy**")
+    lines.append(
+        f"Without Eve, symbol accuracy was **{seq_no_eve['symbol_accuracy']:.3f}**."
+    )
+    lines.append(
+        f"With Eve, symbol accuracy was **{seq_attack['symbol_accuracy']:.3f}**."
+    )
+    lines.append("")
+
+    lines.append("**3. Losses**")
+    lines.append(
+        f"Without Eve, **{seq_no_eve['total_lost']}** blocks were lost "
+        f"(**{seq_no_eve['loss_rate']:.3f}**)."
+    )
+    lines.append(
+        f"With Eve, **{seq_attack['total_lost']}** blocks were lost "
+        f"(**{seq_attack['loss_rate']:.3f}**)."
+    )
+    lines.append("")
+
+    lines.append("**4. Recovered text**")
+    lines.append(f"Without Eve: `{summary_no_eve['recovered_text']}`")
+    lines.append(f"With Eve: `{summary_attack['recovered_text']}`")
+    lines.append("")
+
+    if seq_attack["symbol_accuracy"] < seq_no_eve["symbol_accuracy"]:
+        lines.append(
+            "Eve reduces the reliability of decoding the transmitted 2-bit quantum symbols."
+        )
+    elif seq_attack["symbol_accuracy"] > seq_no_eve["symbol_accuracy"]:
+        lines.append(
+            "The attack result appears better than the no-Eve case, which is usually a sign that finite sampling "
+            "or the simplified stochastic model still dominates the behaviour."
+        )
+    else:
+        lines.append(
+            "The symbol accuracy stayed the same in this run."
+        )
+
+    return "\n".join(lines)
 
 def run_simple_simulation(params):
     message = params["source"]["message"]
@@ -1268,13 +1332,25 @@ st.divider()
 st.subheader("Simulation")
 
 if st.button("Run simulation"):
+    # --------------------------------------------------------
+    # Old packet-level simulation
+    # --------------------------------------------------------
     result_attack = run_simple_simulation(params)
     params_no_eve = clone_params_without_eve(params)
     result_no_eve = run_simple_simulation(params_no_eve)
 
+    # --------------------------------------------------------
+    # New message-level simulation
+    # --------------------------------------------------------
+    message_attack = build_message_transmission_summary(params["source"]["message"], params)
+    message_no_eve = build_message_transmission_summary(params["source"]["message"], params_no_eve)
+
     st.success("Simulation complete")
 
-    st.subheader("Comparison: without Eve vs with Eve")
+    # ========================================================
+    # Packet-level comparison
+    # ========================================================
+    st.subheader("Packet-level comparison: without Eve vs with Eve")
 
     col1, col2 = st.columns(2)
 
@@ -1298,7 +1374,7 @@ if st.button("Run simulation"):
     st.write("Active Eve channels:", result_attack["eve_channels"])
 
     if result_attack["source_mode"] == "article_state":
-        st.subheader("Confusion Matrix Comparison")
+        st.subheader("Packet-level confusion matrix comparison")
 
         confusion_no_eve_df = pd.DataFrame(result_no_eve["confusion_matrix"]).T
         confusion_no_eve_df.index.name = "Sent state"
@@ -1356,3 +1432,52 @@ if st.button("Run simulation"):
 
     analysis_text = generate_text_analysis(result_no_eve, result_attack)
     st.markdown(analysis_text)
+
+    # ========================================================
+    # Message-level comparison
+    # ========================================================
+    st.subheader("Message-level comparison: without Eve vs with Eve")
+
+    msg_col1, msg_col2 = st.columns(2)
+
+    seq_no_eve = message_no_eve["sequence_result"]
+    seq_attack = message_attack["sequence_result"]
+
+    with msg_col1:
+        st.markdown("### Without Eve")
+        st.metric("Detected 2-bit blocks", seq_no_eve["total_detected"])
+        st.metric("Lost 2-bit blocks", seq_no_eve["total_lost"])
+        st.metric("Detection rate", f"{seq_no_eve['detection_rate']:.3f}")
+        st.metric("Symbol accuracy", f"{seq_no_eve['symbol_accuracy']:.3f}")
+
+    with msg_col2:
+        st.markdown("### With Eve")
+        st.metric("Detected 2-bit blocks", seq_attack["total_detected"])
+        st.metric("Lost 2-bit blocks", seq_attack["total_lost"])
+        st.metric("Detection rate", f"{seq_attack['detection_rate']:.3f}")
+        st.metric("Symbol accuracy", f"{seq_attack['symbol_accuracy']:.3f}")
+
+    st.markdown("### Recovered text")
+    st.write("Original text:", message_attack["original_text"])
+    st.write("Recovered without Eve:", message_no_eve["recovered_text"])
+    st.write("Recovered with Eve:", message_attack["recovered_text"])
+
+    st.markdown("### Recovered bits")
+    st.write("Without Eve (raw):", message_no_eve["recovered_bits_raw"])
+    st.write("With Eve (raw):", message_attack["recovered_bits_raw"])
+
+    msg_tab1, msg_tab2, msg_tab3 = st.tabs(
+        ["Transmission table: without Eve", "Transmission table: with Eve", "Message analysis"]
+    )
+
+    with msg_tab1:
+        transmission_df_no_eve = pd.DataFrame(message_no_eve["sequence_result"]["results"])
+        st.dataframe(transmission_df_no_eve, use_container_width=True)
+
+    with msg_tab2:
+        transmission_df_attack = pd.DataFrame(message_attack["sequence_result"]["results"])
+        st.dataframe(transmission_df_attack, use_container_width=True)
+
+    with msg_tab3:
+        message_analysis = generate_message_level_analysis(message_no_eve, message_attack)
+        st.markdown(message_analysis)
