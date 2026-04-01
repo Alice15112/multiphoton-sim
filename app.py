@@ -545,6 +545,7 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
         "is_correct": is_correct,
     }
 
+
 def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
     results = []
 
@@ -590,7 +591,42 @@ def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
         "symbol_accuracy": symbol_accuracy,
         "loss_rate": loss_rate,
     }
-    
+
+
+def recovered_bits_from_results(results: list[dict], fill_missing: str = "??") -> str:
+    recovered_chunks = []
+
+    for result in results:
+        if result["decoded_bits"] is None:
+            recovered_chunks.append(fill_missing)
+        else:
+            recovered_chunks.append(result["decoded_bits"])
+
+    return "".join(recovered_chunks)
+def keep_only_binary_chars(bitstring: str) -> str:
+    return "".join(ch for ch in bitstring if ch in "01")
+
+
+def build_message_transmission_summary(text: str, params: dict) -> dict:
+    encoded = encode_text_to_states(text)
+    sequence_result = simulate_state_sequence(encoded["states"], params)
+
+    recovered_bits_raw = recovered_bits_from_results(sequence_result["results"])
+    recovered_bits_clean = keep_only_binary_chars(recovered_bits_raw)
+    recovered_text = bitstring_to_text(recovered_bits_clean)
+
+    return {
+        "original_text": text,
+        "original_bitstring": encoded["bitstring"],
+        "bit_pairs": encoded["bit_pairs"],
+        "sent_states": encoded["states"],
+        "sequence_result": sequence_result,
+        "recovered_bits_raw": recovered_bits_raw,
+        "recovered_bits_clean": recovered_bits_clean,
+        "recovered_text": recovered_text,
+    }
+
+
 def clone_params_without_eve(params):
     cloned = {
         "source": {
@@ -627,38 +663,6 @@ def clone_params_without_eve(params):
 
     return cloned
 
-def recovered_bits_from_results(results: list[dict], fill_missing: str = "??") -> str:
-    recovered_chunks = []
-
-    for result in results:
-        if result["decoded_bits"] is None:
-            recovered_chunks.append(fill_missing)
-        else:
-            recovered_chunks.append(result["decoded_bits"])
-
-    return "".join(recovered_chunks)
-
-def keep_only_binary_chars(bitstring: str) -> str:
-    return "".join(ch for ch in bitstring if ch in "01")
-
-def build_message_transmission_summary(text: str, params: dict) -> dict:
-    encoded = encode_text_to_states(text)
-    sequence_result = simulate_state_sequence(encoded["states"], params)
-
-    recovered_bits_raw = recovered_bits_from_results(sequence_result["results"])
-    recovered_bits_clean = keep_only_binary_chars(recovered_bits_raw)
-    recovered_text = bitstring_to_text(recovered_bits_clean)
-
-    return {
-        "original_text": text,
-        "original_bitstring": encoded["bitstring"],
-        "bit_pairs": encoded["bit_pairs"],
-        "sent_states": encoded["states"],
-        "sequence_result": sequence_result,
-        "recovered_bits_raw": recovered_bits_raw,
-        "recovered_bits_clean": recovered_bits_clean,
-        "recovered_text": recovered_text,
-    }
 
 def plot_confusion_heatmap(confusion_percent_df):
     fig, ax = plt.subplots(figsize=(6, 5))
@@ -1232,8 +1236,6 @@ with st.expander("Single state transmission test"):
     test_result = simulate_single_state_transmission("psi1", params)
     st.json(test_result)
 
-st.divider()
-
 with st.expander("Message transmission test"):
     message_result = build_message_transmission_summary(params["source"]["message"], params)
 
@@ -1256,7 +1258,9 @@ with st.expander("Message transmission test"):
 
     transmission_df = pd.DataFrame(seq["results"])
     st.dataframe(transmission_df, use_container_width=True)
-    
+
+st.divider()
+
 # ============================================================
 # Simulation
 # ============================================================
