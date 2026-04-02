@@ -482,6 +482,100 @@ def local_projector(angle_deg, click_value):
 def kron4(a, b, c, d):
     return np.kron(np.kron(np.kron(a, b), c), d)
 
+def rotation_matrix(angle_deg: float) -> np.ndarray:
+    theta = math.radians(angle_deg)
+    return np.array([
+        [math.cos(theta), -math.sin(theta)],
+        [math.sin(theta),  math.cos(theta)],
+    ], dtype=float)
+
+
+def kron_many(matrices: list[np.ndarray]) -> np.ndarray:
+    result = matrices[0]
+    for matrix in matrices[1:]:
+        result = np.kron(result, matrix)
+    return result
+
+
+def sample_effective_pr_angles(params: dict) -> dict:
+    effective_angles = {}
+
+    for pr_name in ["pr_1", "pr_2", "pr_3", "pr_4"]:
+        pr = params["pr"][pr_name]
+        effective_angles[pr_name] = (
+            pr["angle"] + random.uniform(-pr["error"] * 180.0, pr["error"] * 180.0)
+        )
+
+    return effective_angles
+
+
+def build_pr_rotation_operator_from_angles(effective_pr_angles: dict) -> np.ndarray:
+    matrices = [
+        rotation_matrix(effective_pr_angles["pr_1"]),
+        rotation_matrix(effective_pr_angles["pr_2"]),
+        rotation_matrix(effective_pr_angles["pr_3"]),
+        rotation_matrix(effective_pr_angles["pr_4"]),
+    ]
+    return kron_many(matrices)
+
+
+def apply_pr_rotations_to_state(state_vector: np.ndarray, effective_pr_angles: dict) -> np.ndarray:
+    rotation_operator = build_pr_rotation_operator_from_angles(effective_pr_angles)
+    rotated_state = rotation_operator @ state_vector
+    return normalize_state(rotated_state)
+
+
+def basis_projector(click_value: int) -> np.ndarray:
+    if click_value == 0:
+        ket = np.array([1.0, 0.0], dtype=float)  # |x>
+    else:
+        ket = np.array([0.0, 1.0], dtype=float)  # |y>
+
+    return np.outer(ket, ket)
+
+
+def joint_pattern_probabilities_in_standard_basis(state_vector: np.ndarray) -> dict:
+    probs = {}
+    rho = np.outer(state_vector, state_vector)
+
+    for c1 in [0, 1]:
+        for c2 in [0, 1]:
+            for c3 in [0, 1]:
+                for c4 in [0, 1]:
+                    P1 = basis_projector(c1)
+                    P2 = basis_projector(c2)
+                    P3 = basis_projector(c3)
+                    P4 = basis_projector(c4)
+
+                    joint_projector = kron4(P1, P2, P3, P4)
+                    prob = float(np.trace(rho @ joint_projector))
+                    prob = max(0.0, prob)
+
+                    probs[(c1, c2, c3, c4)] = prob
+
+    total = sum(probs.values())
+    if total > 0:
+        probs = {k: v / total for k, v in probs.items()}
+
+    return probs
+
+
+def decode_state_from_pattern_with_pr(observed_pattern: tuple, effective_pr_angles: dict) -> tuple[str, float]:
+    best_state = None
+    best_prob = -1.0
+
+    rotation_operator = build_pr_rotation_operator_from_angles(effective_pr_angles)
+
+    for state_label, state_vector in ARTICLE_STATE_VECTORS.items():
+        rotated_state = normalize_state(rotation_operator @ state_vector)
+        probs = joint_pattern_probabilities_in_standard_basis(rotated_state)
+        p = probs.get(tuple(observed_pattern), 0.0)
+
+        if p > best_prob:
+            best_prob = p
+            best_state = state_label
+
+    return best_state, best_prob
 
 def joint_pattern_probabilities(state_vector, effective_angles):
     probs = {}
