@@ -332,7 +332,6 @@ def reduced_density_matrix_one_qubit(state_vector, qubit_index):
 
 def compute_bit_error_rate(original_bits: str, recovered_bits_raw: str) -> dict:
     recovered_bits = "".join(ch for ch in recovered_bits_raw if ch in "01")
-
     comparable_length = min(len(original_bits), len(recovered_bits))
 
     if comparable_length == 0:
@@ -343,8 +342,7 @@ def compute_bit_error_rate(original_bits: str, recovered_bits_raw: str) -> dict:
         }
 
     bit_errors = sum(
-        1
-        for i in range(comparable_length)
+        1 for i in range(comparable_length)
         if original_bits[i] != recovered_bits[i]
     )
 
@@ -368,8 +366,7 @@ def compute_symbol_error_rate(results: list[dict]) -> dict:
         }
 
     symbol_errors = sum(
-        1
-        for r in detected_results
+        1 for r in detected_results
         if not r["is_correct"]
     )
 
@@ -404,8 +401,7 @@ def build_bit_comparison_table(bit_pairs: list[str], results: list[dict]) -> pd.
         bit_errors = None
         if recovered_bits != "??":
             bit_errors = sum(
-                1
-                for a, b in zip(original_bits, recovered_bits)
+                1 for a, b in zip(original_bits, recovered_bits)
                 if a != b
             )
 
@@ -482,6 +478,11 @@ def local_projector(angle_deg, click_value):
 def kron4(a, b, c, d):
     return np.kron(np.kron(np.kron(a, b), c), d)
 
+
+# ============================================================
+# New PR-as-state-rotation path
+# ============================================================
+
 def rotation_matrix(angle_deg: float) -> np.ndarray:
     theta = math.radians(angle_deg)
     return np.array([
@@ -530,7 +531,6 @@ def basis_projector(click_value: int) -> np.ndarray:
         ket = np.array([1.0, 0.0], dtype=float)  # |x>
     else:
         ket = np.array([0.0, 1.0], dtype=float)  # |y>
-
     return np.outer(ket, ket)
 
 
@@ -576,6 +576,11 @@ def decode_state_from_pattern_with_pr(observed_pattern: tuple, effective_pr_angl
             best_state = state_label
 
     return best_state, best_prob
+
+
+# ============================================================
+# Legacy angle-based path kept for comparison / rollback
+# ============================================================
 
 def joint_pattern_probabilities(state_vector, effective_angles):
     probs = {}
@@ -686,8 +691,10 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
     state_vector = ARTICLE_STATE_VECTORS[state_label]
     sent_bits = STATE_TO_BITS[state_label]
 
-    effective_angles = effective_pr_angles_for_packet(params)
-    joint_probs = joint_pattern_probabilities(state_vector, effective_angles)
+    effective_pr_angles = sample_effective_pr_angles(params)
+
+    rotated_state = apply_pr_rotations_to_state(state_vector, effective_pr_angles)
+    joint_probs = joint_pattern_probabilities_in_standard_basis(rotated_state)
     ideal_pattern = sample_joint_pattern(joint_probs)
 
     observed_pattern = apply_channel_and_detector_effects(ideal_pattern, params)
@@ -701,9 +708,9 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
     is_correct = False
 
     if packet_detected:
-        decoded_state, decoding_confidence = decode_state_from_pattern(
+        decoded_state, decoding_confidence = decode_state_from_pattern_with_pr(
             observed_pattern,
-            effective_angles,
+            effective_pr_angles,
         )
         decoded_bits = STATE_TO_BITS[decoded_state]
         is_correct = decoded_state == state_label
@@ -711,6 +718,7 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
     return {
         "sent_state": state_label,
         "sent_bits": sent_bits,
+        "effective_pr_angles": effective_pr_angles,
         "ideal_pattern": ideal_pattern,
         "observed_pattern": observed_pattern,
         "packet_detected": packet_detected,
@@ -719,6 +727,105 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
         "decoded_bits": decoded_bits,
         "decoding_confidence": decoding_confidence,
         "is_correct": is_correct,
+    }
+
+
+def format_pattern_tuple(pattern: tuple | None) -> str:
+    if pattern is None:
+        return "—"
+    return "".join(str(bit) for bit in pattern)
+
+
+def state_vector_to_amplitude_table(state_vector: np.ndarray, threshold: float = 1e-9) -> pd.DataFrame:
+    rows = []
+
+    for index, amplitude in enumerate(state_vector):
+        probability = float(abs(amplitude) ** 2)
+        if probability < threshold:
+            continue
+
+        bits = format(index, "04b")
+        basis_label = f"|{''.join('x' if bit == '0' else 'y' for bit in bits)}⟩"
+
+        rows.append({
+            "basis_index": index,
+            "basis_bits": bits,
+            "basis_state": basis_label,
+            "amplitude": float(amplitude),
+            "probability": probability,
+        })
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("probability", ascending=False).reset_index(drop=True)
+        df["probability"] = df["probability"].round(6)
+        df["amplitude"] = df["amplitude"].round(6)
+
+    return df
+
+
+def probability_dict_to_dataframe(prob_dict: dict) -> pd.DataFrame:
+    rows = []
+
+    for pattern, probability in prob_dict.items():
+        rows.append({
+            "pattern_tuple": pattern,
+            "pattern_bits": format_pattern_tuple(pattern),
+            "probability": float(probability),
+        })
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("probability", ascending=False).reset_index(drop=True)
+        df["probability"] = df["probability"].round(6)
+
+    return df
+
+
+def build_single_packet_debug_report(state_label: str, params: dict) -> dict:
+    if state_label not in ARTICLE_STATE_VECTORS:
+        raise ValueError(f"Unknown article state: {state_label}")
+
+    state_vector = ARTICLE_STATE_VECTORS[state_label]
+    detection_mode = params.get("simulation", {}).get("detection_mode", "any_click")
+
+    effective_pr_angles = sample_effective_pr_angles(params)
+    rotated_state = apply_pr_rotations_to_state(state_vector, effective_pr_angles)
+
+    ideal_probabilities = joint_pattern_probabilities_in_standard_basis(rotated_state)
+    ideal_pattern = sample_joint_pattern(ideal_probabilities)
+    observed_pattern = apply_channel_and_detector_effects(ideal_pattern, params)
+
+    packet_detected = is_informative_detection(observed_pattern, detection_mode)
+
+    decoded_state = None
+    decoded_bits = None
+    decoding_confidence = 0.0
+
+    if packet_detected:
+        decoded_state, decoding_confidence = decode_state_from_pattern_with_pr(
+            observed_pattern,
+            effective_pr_angles,
+        )
+        decoded_bits = STATE_TO_BITS[decoded_state]
+
+    return {
+        "sent_state": state_label,
+        "sent_bits": STATE_TO_BITS[state_label],
+        "detection_mode": detection_mode,
+        "effective_pr_angles": effective_pr_angles,
+        "initial_state_amplitudes": state_vector_to_amplitude_table(state_vector),
+        "rotated_state_amplitudes": state_vector_to_amplitude_table(rotated_state),
+        "ideal_probability_table": probability_dict_to_dataframe(ideal_probabilities),
+        "ideal_pattern": ideal_pattern,
+        "observed_pattern": observed_pattern,
+        "packet_detected": packet_detected,
+        "decoded_state": decoded_state,
+        "decoded_bits": decoded_bits,
+        "decoding_confidence": decoding_confidence,
+        "is_correct": decoded_state == state_label if decoded_state is not None else False,
+        "ideal_probability_of_sampled_pattern": float(ideal_probabilities.get(ideal_pattern, 0.0)),
+        "observed_pattern_same_as_ideal": observed_pattern == ideal_pattern,
     }
 
 
@@ -743,7 +850,6 @@ def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
 
         if result["packet_detected"]:
             total_detected += 1
-
             decoded_state = result["decoded_state"]
             confusion_matrix[state_label][decoded_state] += 1
 
@@ -766,6 +872,7 @@ def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
         "detection_rate": detection_rate,
         "symbol_accuracy": symbol_accuracy,
         "loss_rate": loss_rate,
+        "detection_mode": params.get("simulation", {}).get("detection_mode", "any_click"),
     }
 
 
@@ -907,6 +1014,7 @@ def generate_text_analysis(result_no_eve, result_attack):
 
     source_mode = result_attack["source_mode"]
     selected_state = result_attack["selected_state_label"]
+    detection_mode = result_attack.get("detection_mode", "unknown")
 
     detected_no_eve = result_no_eve["detected"]
     detected_attack = result_attack["detected"]
@@ -931,6 +1039,7 @@ def generate_text_analysis(result_no_eve, result_attack):
         f"The simulation was run in **{source_mode}** mode"
         + (f" with source state **{selected_state}**." if source_mode == "article_state" else ".")
     )
+    lines.append(f"Detection mode was **{detection_mode}**.")
     lines.append("")
 
     lines.append("**1. Detection efficiency**")
@@ -948,12 +1057,9 @@ def generate_text_analysis(result_no_eve, result_attack):
             "This indicates that the attack reduces the probability of preserving the expected multi-photon detection pattern."
         )
     else:
-        lines.append(
-            f"The number of detected packets stayed the same: **{detected_no_eve}**."
-        )
+        lines.append(f"The number of detected packets stayed the same: **{detected_no_eve}**.")
 
     lines.append("")
-
     lines.append("**2. Error behaviour / QBER**")
     if qber_attack > qber_no_eve:
         lines.append(
@@ -970,12 +1076,9 @@ def generate_text_analysis(result_no_eve, result_attack):
             "and finite sampling fluctuations dominate the result."
         )
     else:
-        lines.append(
-            f"The QBER remained unchanged at **{qber_attack:.3f}**."
-        )
+        lines.append(f"The QBER remained unchanged at **{qber_attack:.3f}**.")
 
     lines.append("")
-
     lines.append("**3. Success rate**")
     if success_attack > success_no_eve:
         lines.append(
@@ -991,12 +1094,9 @@ def generate_text_analysis(result_no_eve, result_attack):
             "This is consistent with the idea that disturbance in the channel worsens transmission quality."
         )
     else:
-        lines.append(
-            f"The success rate remained the same at **{success_attack:.3f}**."
-        )
+        lines.append(f"The success rate remained the same at **{success_attack:.3f}**.")
 
     lines.append("")
-
     if source_mode == "article_state":
         lines.append("**4. State decoding interpretation**")
         lines.append(
@@ -1019,9 +1119,7 @@ def generate_text_analysis(result_no_eve, result_attack):
             )
 
             if best_decoded == selected_state:
-                lines.append(
-                    "So the dominant decoding channel is still correct."
-                )
+                lines.append("So the dominant decoding channel is still correct.")
             else:
                 lines.append(
                     "So the dominant decoding channel is already shifted to another state, "
@@ -1049,11 +1147,13 @@ def generate_message_level_analysis(summary_no_eve, summary_attack):
     ser_no_eve = summary_no_eve["ser_stats"]["ser"]
     ser_attack = summary_attack["ser_stats"]["ser"]
 
+    detection_mode = summary_attack["sequence_result"].get("detection_mode", "unknown")
+
     lines = []
     lines.append("### Message-level analysis")
     lines.append("")
-
     lines.append(f"Original text: **{summary_attack['original_text']}**")
+    lines.append(f"Detection mode: **{detection_mode}**")
     lines.append("")
 
     lines.append("**1. Detection statistics**")
@@ -1094,18 +1194,14 @@ def generate_message_level_analysis(summary_no_eve, summary_attack):
     lines.append("")
 
     if ber_attack > ber_no_eve:
-        lines.append(
-            "Eve increases the bit-level distortion of the transmitted message."
-        )
+        lines.append("Eve increases the bit-level distortion of the transmitted message.")
     elif ber_attack < ber_no_eve:
         lines.append(
             "In this run the attack appears to improve bit-level recovery, which is usually a sign that the simplified "
             "stochastic model or finite sampling still dominates the result."
         )
     else:
-        lines.append(
-            "The bit-level error rate stayed unchanged in this run."
-        )
+        lines.append("The bit-level error rate stayed unchanged in this run.")
 
     return "\n".join(lines)
 
@@ -1148,13 +1244,11 @@ def run_simple_simulation(params):
             continue
 
         transmitted += 1
-
         packet_detected = False
         packet_error = False
 
         if source_mode == "article_state" and selected_state_label in ARTICLE_STATE_VECTORS:
             single_result = simulate_single_state_transmission(selected_state_label, params)
-
             packet_detected = single_result["packet_detected"]
 
             if packet_detected:
@@ -1186,7 +1280,6 @@ def run_simple_simulation(params):
                 )
 
                 eve_disturbance = channel.get("eve_disturbance", 0.0) if channel["eve"] else 0.0
-
                 p_click = p_quantum * detector["eta"]
                 click = random.random() < p_click
 
@@ -1229,6 +1322,7 @@ def run_simple_simulation(params):
         "source_mode": source_mode,
         "decoded_state_counts": decoded_state_counts,
         "confusion_matrix": confusion_matrix,
+        "detection_mode": params.get("simulation", {}).get("detection_mode", "any_click"),
     }
 
 
@@ -1303,6 +1397,12 @@ with right_col:
                 index=0 if params["source"]["mode"] == "manual" else 1,
             )
 
+            detection_mode = st.selectbox(
+                "Detection mode",
+                ["any_click", "fourfold"],
+                index=0 if params["simulation"]["detection_mode"] == "any_click" else 1,
+            )
+
             article_state_label = params["source"]["article_state_label"]
 
             if mode == "article_state":
@@ -1362,6 +1462,7 @@ with right_col:
                 params["source"]["pair_generation_efficiency"] = pair_generation_efficiency
                 params["source"]["mode"] = mode
                 params["source"]["article_state_label"] = article_state_label
+                params["simulation"]["detection_mode"] = detection_mode
 
                 if mode == "article_state":
                     params["source"]["selected_state_label"] = article_state_label
@@ -1491,19 +1592,67 @@ with st.expander("Message encoding preview"):
     st.write("Bit pairs:", encoding_preview["bit_pairs"])
     st.write("Mapped states:", encoding_preview["states"])
 
-with st.expander("Single state transmission test"):
-    test_result = simulate_single_state_transmission("psi1", params)
-    st.json(test_result)
+with st.expander("Single packet debug view"):
+    debug_state = params["source"].get("article_state_label", "psi1")
+
+    if params["source"].get("mode") != "article_state":
+        st.info("Debug view for a single packet is currently defined for article states ψ1..ψ4. Switch the source mode to article_state to inspect one packet step by step.")
+    else:
+        debug_report = build_single_packet_debug_report(debug_state, params)
+
+        st.markdown(f"### Debugging one packet for **{debug_report['sent_state']}** ({debug_report['sent_bits']})")
+
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+        metric_col1.metric("Ideal sampled pattern", format_pattern_tuple(debug_report["ideal_pattern"]))
+        metric_col2.metric("Observed pattern", format_pattern_tuple(debug_report["observed_pattern"]))
+        metric_col3.metric("Packet detected", "yes" if debug_report["packet_detected"] else "no")
+        metric_col4.metric("Decoded state", debug_report["decoded_state"] or "lost")
+
+        st.markdown("#### Step 1. Effective PR angles used in this packet")
+        st.json(debug_report["effective_pr_angles"])
+
+        st.markdown("#### Step 2. Non-zero amplitudes of the original state")
+        st.dataframe(debug_report["initial_state_amplitudes"], use_container_width=True)
+
+        st.markdown("#### Step 3. Non-zero amplitudes after PR rotations")
+        st.dataframe(debug_report["rotated_state_amplitudes"], use_container_width=True)
+
+        st.markdown("#### Step 4. Probabilities of all 16 detector patterns")
+        st.dataframe(debug_report["ideal_probability_table"], use_container_width=True)
+
+        st.markdown("#### Step 5. Packet interpretation")
+        st.write("Probability of sampled ideal pattern:", f"{debug_report['ideal_probability_of_sampled_pattern']:.6f}")
+        st.write("Observed pattern stayed equal to ideal pattern:", debug_report["observed_pattern_same_as_ideal"])
+        st.write("Decoded bits:", debug_report["decoded_bits"] if debug_report["decoded_bits"] is not None else "—")
+        st.write("Decoding confidence:", f"{debug_report['decoding_confidence']:.6f}")
+        st.write("Decoded correctly:", debug_report["is_correct"])
+
+        with st.expander("Raw debug dictionary"):
+            raw_debug_report = {
+                "sent_state": debug_report["sent_state"],
+                "sent_bits": debug_report["sent_bits"],
+                "detection_mode": debug_report["detection_mode"],
+                "effective_pr_angles": debug_report["effective_pr_angles"],
+                "ideal_pattern": debug_report["ideal_pattern"],
+                "observed_pattern": debug_report["observed_pattern"],
+                "packet_detected": debug_report["packet_detected"],
+                "decoded_state": debug_report["decoded_state"],
+                "decoded_bits": debug_report["decoded_bits"],
+                "decoding_confidence": debug_report["decoding_confidence"],
+                "is_correct": debug_report["is_correct"],
+            }
+            st.json(raw_debug_report)
 
 with st.expander("Message transmission test"):
     message_result = build_message_transmission_summary(params["source"]["message"], params)
 
     st.write("Original text:", message_result["original_text"])
-    st.write("Original bitstring:", message_result["original_bitstring"])
+    st.write("Bitstring:", message_result["original_bitstring"])
     st.write("Bit pairs:", message_result["bit_pairs"])
     st.write("Sent states:", message_result["sent_states"])
 
     seq = message_result["sequence_result"]
+    st.write("Detection mode:", seq["detection_mode"])
     st.write("Total sent:", seq["total_sent"])
     st.write("Total detected:", seq["total_detected"])
     st.write("Total lost:", seq["total_lost"])
@@ -1530,24 +1679,15 @@ st.divider()
 st.subheader("Simulation")
 
 if st.button("Run simulation"):
-    # --------------------------------------------------------
-    # Old packet-level simulation
-    # --------------------------------------------------------
     result_attack = run_simple_simulation(params)
     params_no_eve = clone_params_without_eve(params)
     result_no_eve = run_simple_simulation(params_no_eve)
 
-    # --------------------------------------------------------
-    # New message-level simulation
-    # --------------------------------------------------------
     message_attack = build_message_transmission_summary(params["source"]["message"], params)
     message_no_eve = build_message_transmission_summary(params["source"]["message"], params_no_eve)
 
     st.success("Simulation complete")
 
-    # ========================================================
-    # Packet-level comparison
-    # ========================================================
     st.subheader("Packet-level comparison: without Eve vs with Eve")
 
     col1, col2 = st.columns(2)
@@ -1570,6 +1710,7 @@ if st.button("Run simulation"):
     st.write("Source mode:", result_attack["source_mode"])
     st.write("Selected source state:", result_attack["selected_state_label"])
     st.write("Active Eve channels:", result_attack["eve_channels"])
+    st.write("Detection mode:", params["simulation"]["detection_mode"])
 
     if result_attack["source_mode"] == "article_state":
         st.subheader("Packet-level confusion matrix comparison")
@@ -1624,16 +1765,12 @@ if st.button("Run simulation"):
         with tab4:
             st.markdown("#### Difference: With Eve - Without Eve (%)")
             st.dataframe(difference_df, use_container_width=True)
-
             fig_diff = plot_difference_heatmap(difference_df)
             st.pyplot(fig_diff)
 
     analysis_text = generate_text_analysis(result_no_eve, result_attack)
     st.markdown(analysis_text)
 
-    # ========================================================
-    # Message-level comparison
-    # ========================================================
     st.subheader("Message-level comparison: without Eve vs with Eve")
 
     msg_col1, msg_col2 = st.columns(2)
