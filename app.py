@@ -78,6 +78,21 @@ if "scheme_params" not in st.session_state:
 
 params = st.session_state.scheme_params
 
+if "last_debug_result" not in st.session_state:
+    st.session_state.last_debug_result = None
+
+if "last_debug_state_label" not in st.session_state:
+    st.session_state.last_debug_state_label = None
+
+if "last_message_result" not in st.session_state:
+    st.session_state.last_message_result = None
+
+if "last_simulation_result" not in st.session_state:
+    st.session_state.last_simulation_result = None
+
+if "last_self_test_result" not in st.session_state:
+    st.session_state.last_self_test_result = None
+
 # ============================================================
 # Migration for older saved state
 # ============================================================
@@ -959,6 +974,114 @@ def clone_params_without_eve(params):
     return cloned
 
 
+def clone_ideal_params(params: dict) -> dict:
+    cloned = {
+        "source": {
+            "message": params["source"]["message"],
+            "num_packets": params["source"]["num_packets"],
+            "pair_generation_efficiency": 1.0,
+            "mode": params["source"]["mode"],
+            "article_state_label": params["source"]["article_state_label"],
+            "selected_state_label": params["source"]["selected_state_label"],
+            "state_angles": params["source"]["state_angles"].copy(),
+        },
+        "channels": {},
+        "pr": {},
+        "detectors": {},
+        "beam_splitters": {},
+        "simulation": params.get("simulation", {}).copy(),
+    }
+
+    for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
+        cloned["channels"][channel_name] = {
+            "loss": 0.0,
+            "eve": False,
+            "eve_disturbance": 0.0,
+        }
+
+    for pr_name in ["pr_1", "pr_2", "pr_3", "pr_4"]:
+        cloned["pr"][pr_name] = {
+            "angle": params["pr"][pr_name]["angle"],
+            "error": 0.0,
+        }
+
+    for detector_name in ["detector_1", "detector_2", "detector_3", "detector_4"]:
+        cloned["detectors"][detector_name] = {
+            "eta": 1.0,
+            "dark": 0.0,
+        }
+
+    cloned["beam_splitters"]["bs_left"] = {"loss": 0.0}
+    cloned["beam_splitters"]["bs_right"] = {"loss": 0.0}
+
+    return cloned
+
+
+def run_ideal_self_test(trials_per_state: int, params: dict) -> dict:
+    ideal_params = clone_ideal_params(params)
+
+    confusion_matrix = {
+        "psi1": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
+        "psi2": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
+        "psi3": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
+        "psi4": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
+    }
+
+    rows = []
+
+    for state_label in ["psi1", "psi2", "psi3", "psi4"]:
+        correct_count = 0
+        detected_count = 0
+
+        for _ in range(trials_per_state):
+            result = simulate_single_state_transmission(state_label, ideal_params)
+
+            if result["packet_detected"]:
+                detected_count += 1
+                decoded_state = result["decoded_state"]
+                confusion_matrix[state_label][decoded_state] += 1
+
+                if decoded_state == state_label:
+                    correct_count += 1
+
+        accuracy = correct_count / detected_count if detected_count else 0.0
+
+        rows.append({
+            "state": state_label,
+            "trials": trials_per_state,
+            "detected": detected_count,
+            "correct": correct_count,
+            "accuracy": accuracy,
+        })
+
+    confusion_df = pd.DataFrame(confusion_matrix).T
+    confusion_percent_df = confusion_df.div(confusion_df.sum(axis=1).replace(0, 1), axis=0) * 100.0
+    summary_df = pd.DataFrame(rows)
+
+    return {
+        "summary_df": summary_df,
+        "confusion_df": confusion_df,
+        "confusion_percent_df": confusion_percent_df,
+    }
+
+
+def build_simulation_bundle(params: dict) -> dict:
+    result_attack = run_simple_simulation(params)
+    params_no_eve = clone_params_without_eve(params)
+    result_no_eve = run_simple_simulation(params_no_eve)
+
+    message_attack = build_message_transmission_summary(params["source"]["message"], params)
+    message_no_eve = build_message_transmission_summary(params["source"]["message"], params_no_eve)
+
+    return {
+        "result_attack": result_attack,
+        "result_no_eve": result_no_eve,
+        "message_attack": message_attack,
+        "message_no_eve": message_no_eve,
+        "params_no_eve": params_no_eve,
+    }
+
+
 def plot_confusion_heatmap(confusion_percent_df):
     fig, ax = plt.subplots(figsize=(6, 5))
 
@@ -1592,13 +1715,40 @@ with st.expander("Message encoding preview"):
     st.write("Bit pairs:", encoding_preview["bit_pairs"])
     st.write("Mapped states:", encoding_preview["states"])
 
-with st.expander("Single packet debug view"):
-    debug_state = params["source"].get("article_state_label", "psi1")
+st.divider()
 
-    if params["source"].get("mode") != "article_state":
-        st.info("Debug view for a single packet is currently defined for article states ψ1..ψ4. Switch the source mode to article_state to inspect one packet step by step.")
+st.subheader("Run heavy calculations only on demand")
+st.caption("This part was refactored so Streamlit does not recompute the expensive blocks every time you change one slider.")
+
+control_col1, control_col2, control_col3 = st.columns(3)
+
+with control_col1:
+    debug_state_label = st.selectbox(
+        "State for single-packet debug",
+        ["psi1", "psi2", "psi3", "psi4"],
+        index=["psi1", "psi2", "psi3", "psi4"].index(params["source"].get("article_state_label", "psi1")),
+    )
+    if st.button("Run single packet debug"):
+        st.session_state.last_debug_result = build_single_packet_debug_report(debug_state_label, params)
+        st.session_state.last_debug_state_label = debug_state_label
+
+with control_col2:
+    if st.button("Run message transmission"):
+        st.session_state.last_message_result = build_message_transmission_summary(params["source"]["message"], params)
+
+with control_col3:
+    self_test_trials = st.number_input("Ideal self-test trials per state", min_value=1, max_value=10000, value=100, step=10)
+    if st.button("Run ideal self-test"):
+        st.session_state.last_self_test_result = run_ideal_self_test(int(self_test_trials), params)
+
+if st.button("Run full simulation"):
+    st.session_state.last_simulation_result = build_simulation_bundle(params)
+
+with st.expander("Single packet debug view", expanded=False):
+    if st.session_state.last_debug_result is None:
+        st.info("Click 'Run single packet debug' to calculate one packet and freeze its report in session state.")
     else:
-        debug_report = build_single_packet_debug_report(debug_state, params)
+        debug_report = st.session_state.last_debug_result
 
         st.markdown(f"### Debugging one packet for **{debug_report['sent_state']}** ({debug_report['sent_bits']})")
 
@@ -1627,66 +1777,67 @@ with st.expander("Single packet debug view"):
         st.write("Decoding confidence:", f"{debug_report['decoding_confidence']:.6f}")
         st.write("Decoded correctly:", debug_report["is_correct"])
 
-        with st.expander("Raw debug dictionary"):
-            raw_debug_report = {
-                "sent_state": debug_report["sent_state"],
-                "sent_bits": debug_report["sent_bits"],
-                "detection_mode": debug_report["detection_mode"],
-                "effective_pr_angles": debug_report["effective_pr_angles"],
-                "ideal_pattern": debug_report["ideal_pattern"],
-                "observed_pattern": debug_report["observed_pattern"],
-                "packet_detected": debug_report["packet_detected"],
-                "decoded_state": debug_report["decoded_state"],
-                "decoded_bits": debug_report["decoded_bits"],
-                "decoding_confidence": debug_report["decoding_confidence"],
-                "is_correct": debug_report["is_correct"],
-            }
-            st.json(raw_debug_report)
+with st.expander("Message transmission test", expanded=False):
+    if st.session_state.last_message_result is None:
+        st.info("Click 'Run message transmission' to calculate this block once.")
+    else:
+        message_result = st.session_state.last_message_result
 
-with st.expander("Message transmission test"):
-    message_result = build_message_transmission_summary(params["source"]["message"], params)
+        st.write("Original text:", message_result["original_text"])
+        st.write("Bitstring:", message_result["original_bitstring"])
+        st.write("Bit pairs:", message_result["bit_pairs"])
+        st.write("Sent states:", message_result["sent_states"])
 
-    st.write("Original text:", message_result["original_text"])
-    st.write("Bitstring:", message_result["original_bitstring"])
-    st.write("Bit pairs:", message_result["bit_pairs"])
-    st.write("Sent states:", message_result["sent_states"])
+        seq = message_result["sequence_result"]
+        st.write("Detection mode:", seq["detection_mode"])
+        st.write("Total sent:", seq["total_sent"])
+        st.write("Total detected:", seq["total_detected"])
+        st.write("Total lost:", seq["total_lost"])
+        st.write("Detection rate:", f"{seq['detection_rate']:.3f}")
+        st.write("Symbol accuracy:", f"{seq['symbol_accuracy']:.3f}")
+        st.write("Loss rate:", f"{seq['loss_rate']:.3f}")
+        st.write("BER:", f"{message_result['ber_stats']['ber']:.3f}")
+        st.write("SER:", f"{message_result['ser_stats']['ser']:.3f}")
 
-    seq = message_result["sequence_result"]
-    st.write("Detection mode:", seq["detection_mode"])
-    st.write("Total sent:", seq["total_sent"])
-    st.write("Total detected:", seq["total_detected"])
-    st.write("Total lost:", seq["total_lost"])
-    st.write("Detection rate:", f"{seq['detection_rate']:.3f}")
-    st.write("Symbol accuracy:", f"{seq['symbol_accuracy']:.3f}")
-    st.write("Loss rate:", f"{seq['loss_rate']:.3f}")
-    st.write("BER:", f"{message_result['ber_stats']['ber']:.3f}")
-    st.write("SER:", f"{message_result['ser_stats']['ser']:.3f}")
+        st.write("Recovered bits raw:", message_result["recovered_bits_raw"])
+        st.write("Recovered bits clean:", message_result["recovered_bits_clean"])
+        st.write("Recovered text:", message_result["recovered_text"])
 
-    st.write("Recovered bits raw:", message_result["recovered_bits_raw"])
-    st.write("Recovered bits clean:", message_result["recovered_bits_clean"])
-    st.write("Recovered text:", message_result["recovered_text"])
+        transmission_df = pd.DataFrame(seq["results"])
+        st.dataframe(transmission_df, use_container_width=True)
+        st.dataframe(message_result["bit_comparison_df"], use_container_width=True)
 
-    transmission_df = pd.DataFrame(seq["results"])
-    st.dataframe(transmission_df, use_container_width=True)
-    st.dataframe(message_result["bit_comparison_df"], use_container_width=True)
+with st.expander("Ideal self-test for ψ1..ψ4", expanded=False):
+    if st.session_state.last_self_test_result is None:
+        st.info("Click 'Run ideal self-test' to compute the confusion matrix in the ideal channel.")
+    else:
+        self_test_result = st.session_state.last_self_test_result
+        st.markdown("### Accuracy by state")
+        st.dataframe(self_test_result["summary_df"], use_container_width=True)
+
+        st.markdown("### Confusion matrix")
+        st.dataframe(self_test_result["confusion_df"], use_container_width=True)
+
+        st.markdown("### Confusion matrix (%)")
+        st.dataframe(self_test_result["confusion_percent_df"], use_container_width=True)
+
+        fig_self_test = plot_confusion_heatmap(self_test_result["confusion_percent_df"])
+        st.pyplot(fig_self_test)
 
 st.divider()
 
-# ============================================================
-# Simulation
-# ============================================================
-
 st.subheader("Simulation")
 
-if st.button("Run simulation"):
-    result_attack = run_simple_simulation(params)
-    params_no_eve = clone_params_without_eve(params)
-    result_no_eve = run_simple_simulation(params_no_eve)
+if st.session_state.last_simulation_result is None:
+    st.info("Click 'Run full simulation' to compare with Eve and without Eve.")
+else:
+    bundle = st.session_state.last_simulation_result
+    result_attack = bundle["result_attack"]
+    result_no_eve = bundle["result_no_eve"]
+    message_attack = bundle["message_attack"]
+    message_no_eve = bundle["message_no_eve"]
 
-    message_attack = build_message_transmission_summary(params["source"]["message"], params)
-    message_no_eve = build_message_transmission_summary(params["source"]["message"], params_no_eve)
-
-    st.success("Simulation complete")
+    st.success("Showing the latest saved full simulation result")
 
     st.subheader("Packet-level comparison: without Eve vs with Eve")
 
@@ -1805,14 +1956,12 @@ if st.button("Run simulation"):
     st.write("Without Eve (raw):", message_no_eve["recovered_bits_raw"])
     st.write("With Eve (raw):", message_attack["recovered_bits_raw"])
 
-    msg_tab1, msg_tab2, msg_tab3, msg_tab4 = st.tabs(
-        [
-            "Transmission table: without Eve",
-            "Transmission table: with Eve",
-            "Bit comparison",
-            "Message analysis",
-        ]
-    )
+    msg_tab1, msg_tab2, msg_tab3, msg_tab4 = st.tabs([
+        "Transmission table: without Eve",
+        "Transmission table: with Eve",
+        "Bit comparison",
+        "Message analysis",
+    ])
 
     with msg_tab1:
         transmission_df_no_eve = pd.DataFrame(message_no_eve["sequence_result"]["results"])
