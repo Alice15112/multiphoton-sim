@@ -73,6 +73,7 @@ if "scheme_params" not in st.session_state:
         },
         "simulation": {
             "detection_mode": "any_click",
+            "physics_model": "article_pr_standard_basis",
         },
     }
 
@@ -92,6 +93,9 @@ if "last_simulation_result" not in st.session_state:
 
 if "last_self_test_result" not in st.session_state:
     st.session_state.last_self_test_result = None
+
+if "last_physics_check_result" not in st.session_state:
+    st.session_state.last_physics_check_result = None
 
 # ============================================================
 # Migration for older saved state
@@ -118,7 +122,10 @@ if "selected_state_label" not in params["source"]:
     params["source"]["selected_state_label"] = "manual"
 
 if "simulation" not in params:
-    params["simulation"] = {"detection_mode": "any_click"}
+    params["simulation"] = {"detection_mode": "any_click", "physics_model": "article_pr_standard_basis"}
+
+if "physics_model" not in params["simulation"]:
+    params["simulation"]["physics_model"] = "article_pr_standard_basis"
 
 left_col, right_col = st.columns([2, 1])
 
@@ -844,6 +851,88 @@ def build_single_packet_debug_report(state_label: str, params: dict) -> dict:
     }
 
 
+def state_norm_value(state_vector: np.ndarray) -> float:
+    return float(np.linalg.norm(state_vector))
+
+
+def build_probability_normalization_table(params: dict) -> pd.DataFrame:
+    rows = []
+
+    fixed_pr_angles = {
+        "pr_1": params["pr"]["pr_1"]["angle"],
+        "pr_2": params["pr"]["pr_2"]["angle"],
+        "pr_3": params["pr"]["pr_3"]["angle"],
+        "pr_4": params["pr"]["pr_4"]["angle"],
+    }
+
+    for state_label, state_vector in ARTICLE_STATE_VECTORS.items():
+        rotated_state = apply_pr_rotations_to_state(state_vector, fixed_pr_angles)
+        probabilities = joint_pattern_probabilities_in_standard_basis(rotated_state)
+        probability_values = list(probabilities.values())
+
+        rows.append({
+            "state": state_label,
+            "initial_norm": state_norm_value(state_vector),
+            "rotated_norm": state_norm_value(rotated_state),
+            "probability_sum": float(sum(probability_values)),
+            "min_probability": float(min(probability_values)),
+            "max_probability": float(max(probability_values)),
+            "negative_probability_count": int(sum(1 for value in probability_values if value < -1e-12)),
+        })
+
+    return pd.DataFrame(rows)
+
+
+def build_decoder_snapshot_table(params: dict) -> pd.DataFrame:
+    rows = []
+
+    fixed_pr_angles = {
+        "pr_1": params["pr"]["pr_1"]["angle"],
+        "pr_2": params["pr"]["pr_2"]["angle"],
+        "pr_3": params["pr"]["pr_3"]["angle"],
+        "pr_4": params["pr"]["pr_4"]["angle"],
+    }
+
+    for state_label, state_vector in ARTICLE_STATE_VECTORS.items():
+        rotated_state = apply_pr_rotations_to_state(state_vector, fixed_pr_angles)
+        probabilities = joint_pattern_probabilities_in_standard_basis(rotated_state)
+        most_likely_pattern, most_likely_probability = max(probabilities.items(), key=lambda item: item[1])
+        decoded_state, decoded_probability = decode_state_from_pattern_with_pr(
+            most_likely_pattern,
+            fixed_pr_angles,
+        )
+
+        rows.append({
+            "state": state_label,
+            "bits": STATE_TO_BITS[state_label],
+            "most_likely_pattern": format_pattern_tuple(most_likely_pattern),
+            "pattern_probability": float(most_likely_probability),
+            "decoded_from_most_likely_pattern": decoded_state,
+            "decoder_probability": float(decoded_probability),
+            "decoded_correctly": decoded_state == state_label,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def build_physics_model_check(params: dict) -> dict:
+    normalization_df = build_probability_normalization_table(params)
+    decoder_snapshot_df = build_decoder_snapshot_table(params)
+
+    probability_sum_ok = bool((normalization_df["probability_sum"].sub(1.0).abs() < 1e-9).all())
+    norm_ok = bool((normalization_df["initial_norm"].sub(1.0).abs() < 1e-9).all() and (normalization_df["rotated_norm"].sub(1.0).abs() < 1e-9).all())
+    non_negative_ok = bool((normalization_df["negative_probability_count"] == 0).all() and (normalization_df["min_probability"] >= -1e-12).all())
+
+    return {
+        "physics_model": params.get("simulation", {}).get("physics_model", "article_pr_standard_basis"),
+        "normalization_df": normalization_df,
+        "decoder_snapshot_df": decoder_snapshot_df,
+        "probability_sum_ok": probability_sum_ok,
+        "norm_ok": norm_ok,
+        "non_negative_ok": non_negative_ok,
+    }
+
+
 def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
     results = []
 
@@ -1526,6 +1615,8 @@ with right_col:
                 index=0 if params["simulation"]["detection_mode"] == "any_click" else 1,
             )
 
+            st.caption("Main physics path is fixed: article state → PR rotations → measurement in the standard x/y basis.")
+
             article_state_label = params["source"]["article_state_label"]
 
             if mode == "article_state":
@@ -1720,7 +1811,7 @@ st.divider()
 st.subheader("Run heavy calculations only on demand")
 st.caption("This part was refactored so Streamlit does not recompute the expensive blocks every time you change one slider.")
 
-control_col1, control_col2, control_col3 = st.columns(3)
+control_col1, control_col2, control_col3, control_col4 = st.columns(4)
 
 with control_col1:
     debug_state_label = st.selectbox(
@@ -1741,8 +1832,31 @@ with control_col3:
     if st.button("Run ideal self-test"):
         st.session_state.last_self_test_result = run_ideal_self_test(int(self_test_trials), params)
 
+with control_col4:
+    if st.button("Run physics model self-check"):
+        st.session_state.last_physics_check_result = build_physics_model_check(params)
+
 if st.button("Run full simulation"):
     st.session_state.last_simulation_result = build_simulation_bundle(params)
+
+with st.expander("Physics model self-check", expanded=False):
+    if st.session_state.last_physics_check_result is None:
+        st.info("Click 'Run physics model self-check' to verify the main article-state → PR rotation → x/y-basis measurement path.")
+    else:
+        physics_check = st.session_state.last_physics_check_result
+
+        st.write("Physics model:", physics_check["physics_model"])
+
+        metric_col1, metric_col2, metric_col3 = st.columns(3)
+        metric_col1.metric("State norms OK", "yes" if physics_check["norm_ok"] else "no")
+        metric_col2.metric("Probability sums OK", "yes" if physics_check["probability_sum_ok"] else "no")
+        metric_col3.metric("Non-negative probabilities", "yes" if physics_check["non_negative_ok"] else "no")
+
+        st.markdown("### Normalization and probability checks")
+        st.dataframe(physics_check["normalization_df"], use_container_width=True)
+
+        st.markdown("### Decoder snapshot for the most likely pattern of each state")
+        st.dataframe(physics_check["decoder_snapshot_df"], use_container_width=True)
 
 with st.expander("Single packet debug view", expanded=False):
     if st.session_state.last_debug_result is None:
