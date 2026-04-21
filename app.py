@@ -1,3 +1,4 @@
+
 import math
 import random
 
@@ -10,7 +11,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 
 st.set_page_config(page_title="Multiphoton Quantum Simulator", layout="wide")
 
-st.title("Multiphoton Quantum Communication Simulator")
+st.title("Multiphoton Quantum Simulator")
 
 st.markdown(
     """
@@ -50,10 +51,10 @@ if "scheme_params" not in st.session_state:
             },
         },
         "channels": {
-            "channel_1": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15},
-            "channel_2": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15},
-            "channel_3": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15},
-            "channel_4": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15},
+            "channel_1": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "length": 10.0},
+            "channel_2": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "length": 10.0},
+            "channel_3": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "length": 10.0},
+            "channel_4": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "length": 10.0},
         },
         "pr": {
             "pr_1": {"angle": 0.0, "error": 0.0},
@@ -72,8 +73,13 @@ if "scheme_params" not in st.session_state:
             "bs_right": {"loss": 0.02},
         },
         "simulation": {
-            "detection_mode": "any_click",
+            "detection_mode": "fourfold",
             "physics_model": "article_pr_standard_basis",
+        },
+        "timing": {
+            "speed": 2e8,
+            "coincidence_window": 2e-9,
+            "detector_jitter": 0.2e-9,
         },
     }
 
@@ -122,10 +128,24 @@ if "selected_state_label" not in params["source"]:
     params["source"]["selected_state_label"] = "manual"
 
 if "simulation" not in params:
-    params["simulation"] = {"detection_mode": "any_click", "physics_model": "article_pr_standard_basis"}
+    params["simulation"] = {"detection_mode": "fourfold", "physics_model": "article_pr_standard_basis"}
 
 if "physics_model" not in params["simulation"]:
     params["simulation"]["physics_model"] = "article_pr_standard_basis"
+
+if "detection_mode" not in params["simulation"]:
+    params["simulation"]["detection_mode"] = "fourfold"
+
+if "timing" not in params:
+    params["timing"] = {
+        "speed": 2e8,
+        "coincidence_window": 2e-9,
+        "detector_jitter": 0.2e-9,
+    }
+
+for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
+    if "length" not in params["channels"][channel_name]:
+        params["channels"][channel_name]["length"] = 10.0
 
 left_col, right_col = st.columns([2, 1])
 
@@ -378,7 +398,7 @@ def compute_bit_error_rate(original_bits: str, recovered_bits_raw: str) -> dict:
 
 
 def compute_symbol_error_rate(results: list[dict]) -> dict:
-    detected_results = [r for r in results if r["packet_detected"]]
+    detected_results = [r for r in results if r["postselection_passed"]]
 
     if not detected_results:
         return {
@@ -432,11 +452,13 @@ def build_bit_comparison_table(bit_pairs: list[str], results: list[dict]) -> pd.
             "original_bits": original_bits,
             "sent_state": result["sent_state"],
             "observed_pattern": result["observed_pattern"],
+            "detected_channels": result["detected_channels"],
+            "postselection_passed": result["postselection_passed"],
             "decoded_state": result["decoded_state"],
             "recovered_bits": recovered_bits,
             "bit_errors_in_symbol": bit_errors,
             "symbol_correct": result["is_correct"],
-            "detected": result["packet_detected"],
+            "rejection_reason": result["rejection_reason"],
         })
 
     return pd.DataFrame(rows)
@@ -502,7 +524,7 @@ def kron4(a, b, c, d):
 
 
 # ============================================================
-# New PR-as-state-rotation path
+# Main article-state path: PR as state rotation
 # ============================================================
 
 def rotation_matrix(angle_deg: float) -> np.ndarray:
@@ -652,125 +674,209 @@ def decode_state_from_pattern(observed_pattern, effective_angles):
     return best_state, best_prob
 
 
-
 def apply_channel_and_detector_effects(
     ideal_pattern: tuple,
-    params: dict
-) -> tuple[tuple, tuple]:
+    params: dict,
+):
     """
-    IMPORTANT:
-    ideal_pattern stores polarization outcomes in the measurement basis:
-        0 -> x polarization
-        1 -> y polarization
+    Apply channel loss, detector efficiency, dark counts, and Eve disturbance.
 
-    It does NOT mean "no click / click".
-
-    Therefore we keep two separate objects:
-    - observed_polarization_pattern: tuple[int | None, ...]
-      * 0 / 1 if a polarization outcome was observed
-      * None if that channel was not detected at all
-    - detected_channels: tuple[bool, ...]
-      * True if the channel produced a detector event
-      * False if the channel was lost / missed without a dark count
+    Returns:
+        observed_pattern: tuple of 0/1 or None (polarization outcomes)
+        detected_channels: tuple of bool
+        channel_report: list of dicts (per channel diagnostics)
     """
     channel_names = ["channel_1", "channel_2", "channel_3", "channel_4"]
-    detector_names = ["detector_1", "detector_2", "detector_3", "detector_4"]
 
-    observed_polarization_pattern = []
+    observed_pattern = []
     detected_channels = []
+    channel_report = []
 
-    for idx, (channel_name, detector_name) in enumerate(zip(channel_names, detector_names)):
-        channel = params["channels"][channel_name]
-        detector = params["detectors"][detector_name]
+    for idx, channel_name in enumerate(channel_names):
+        ideal_pol = ideal_pattern[idx]
 
-        ideal_polarization = ideal_pattern[idx]
+        loss_prob = params["channels"][channel_name]["loss"]
+        eve_flag = params["channels"][channel_name]["eve"]
+        eve_disturbance = params["channels"][channel_name]["eve_disturbance"]
 
-        total_loss = channel["loss"]
+        detector_name = f"detector_{idx + 1}"
+        eta = params["detectors"][detector_name]["eta"]
+        dark = params["detectors"][detector_name]["dark"]
 
         if channel_name in ["channel_2", "channel_3"]:
-            total_loss = min(1.0, total_loss + params["beam_splitters"]["bs_right"]["loss"])
+            loss_prob = min(1.0, loss_prob + params["beam_splitters"]["bs_right"]["loss"])
         else:
-            total_loss = min(1.0, total_loss + params["beam_splitters"]["bs_left"]["loss"])
+            loss_prob = min(1.0, loss_prob + params["beam_splitters"]["bs_left"]["loss"])
 
-        photon_lost = random.random() < total_loss
+        lost_in_channel = random.random() < loss_prob
+
+        eve_disturbed = False
+        pol_after_eve = ideal_pol
+        if eve_flag and not lost_in_channel:
+            if random.random() < eve_disturbance:
+                pol_after_eve = 1 - ideal_pol
+                eve_disturbed = True
 
         detected = False
-        observed_polarization = None
+        dark_used = False
+        detector_miss = False
+        observed_pol = None
 
-        if photon_lost:
-            # No photon arrived. A dark count may still happen, but then the
-            # registered polarization outcome is effectively random.
-            if random.random() < detector["dark"]:
+        if not lost_in_channel:
+            if random.random() < eta:
                 detected = True
-                observed_polarization = random.randint(0, 1)
-        else:
-            # Photon arrived. Detector may register it with efficiency eta.
-            if random.random() < detector["eta"]:
-                detected = True
-                observed_polarization = ideal_polarization
+                observed_pol = pol_after_eve
             else:
-                # Missed photon; a dark count can still create a fake click.
-                if random.random() < detector["dark"]:
-                    detected = True
-                    observed_polarization = random.randint(0, 1)
+                detector_miss = True
 
-        # Eve disturbance acts on the observed polarization value, not on the
-        # fact of "whether the bit is 0 or 1".
-        if detected and channel["eve"]:
-            if random.random() < channel.get("eve_disturbance", 0.0):
-                observed_polarization = 1 - observed_polarization
+        if not detected and random.random() < dark:
+            detected = True
+            dark_used = True
+            observed_pol = random.choice([0, 1])
 
-        observed_polarization_pattern.append(observed_polarization)
-        detected_channels.append(detected)
+        detected_channels.append(bool(detected))
+        observed_pattern.append(observed_pol)
 
-    return tuple(observed_polarization_pattern), tuple(detected_channels)
+        channel_report.append({
+            "channel": channel_name,
+            "ideal_polarization": ideal_pol,
+            "observed_polarization": observed_pol,
+            "lost_in_channel": lost_in_channel,
+            "detected": bool(detected),
+            "detector_miss": detector_miss,
+            "dark_count_used": dark_used,
+            "eve_disturbed": eve_disturbed,
+            "channel_length_m": params["channels"][channel_name]["length"],
+        })
+
+    return tuple(observed_pattern), tuple(detected_channels), channel_report
 
 
+def evaluate_detection_status(detected_channels: tuple, mode: str = "fourfold") -> dict:
+    any_detected = any(detected_channels)
+    all_detected = all(detected_channels)
+    full_pattern_available = all_detected
 
-def is_informative_detection(detected_channels: tuple, mode: str = "any_click") -> bool:
     if mode == "any_click":
-        return any(detected_channels)
+        packet_detected = any_detected
+        fourfold_detected = all_detected
+    elif mode == "fourfold":
+        packet_detected = all_detected
+        fourfold_detected = all_detected
+    else:
+        raise ValueError(f"Unknown detection mode: {mode}")
 
-    if mode == "fourfold":
-        return all(detected_channels)
+    if packet_detected:
+        rejection_reason = None
+    else:
+        if not any_detected:
+            rejection_reason = "no channels detected"
+        elif not all_detected:
+            rejection_reason = "not fourfold (missing channels)"
+        else:
+            rejection_reason = "unknown"
 
-    raise ValueError(f"Unknown detection mode: {mode}")
+    return {
+        "packet_detected": packet_detected,
+        "fourfold_detected": fourfold_detected,
+        "full_pattern_available": full_pattern_available,
+        "rejection_reason": rejection_reason,
+    }
 
+
+def simulate_arrival_times(detected_channels: tuple, params: dict):
+    speed = params["timing"]["speed"]
+    window = params["timing"]["coincidence_window"]
+    jitter = params["timing"]["detector_jitter"]
+
+    arrival_times = []
+
+    for idx, detected in enumerate(detected_channels):
+        channel_name = f"channel_{idx + 1}"
+        length = params["channels"][channel_name]["length"]
+
+        if detected:
+            base_time = length / speed
+            noise = random.uniform(-jitter, jitter)
+            arrival_times.append(base_time + noise)
+        else:
+            arrival_times.append(None)
+
+    valid_times = [t for t in arrival_times if t is not None]
+
+    if len(valid_times) < 2:
+        coincidence_passed = False
+    else:
+        t_min = min(valid_times)
+        t_max = max(valid_times)
+        coincidence_passed = (t_max - t_min) <= window
+
+    return arrival_times, coincidence_passed
+
+
+def infer_rejection_reason(channel_report: list[dict], base_reason: str | None, coincidence_passed: bool) -> str | None:
+    if base_reason is not None:
+        if any(row["lost_in_channel"] for row in channel_report):
+            return "channel loss / not fourfold"
+        if any(row["detector_miss"] for row in channel_report):
+            return "detector miss / not fourfold"
+        return base_reason
+
+    if not coincidence_passed:
+        return "failed coincidence window"
+
+    return None
 
 
 def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
     if state_label not in ARTICLE_STATE_VECTORS:
         raise ValueError(f"Unknown article state: {state_label}")
 
-    detection_mode = params.get("simulation", {}).get("detection_mode", "any_click")
+    detection_mode = params.get("simulation", {}).get("detection_mode", "fourfold")
 
     state_vector = ARTICLE_STATE_VECTORS[state_label]
     sent_bits = STATE_TO_BITS[state_label]
 
     effective_pr_angles = sample_effective_pr_angles(params)
-
     rotated_state = apply_pr_rotations_to_state(state_vector, effective_pr_angles)
     joint_probs = joint_pattern_probabilities_in_standard_basis(rotated_state)
     ideal_pattern = sample_joint_pattern(joint_probs)
 
-    observed_pattern, detected_channels = apply_channel_and_detector_effects(ideal_pattern, params)
+    observed_pattern, detected_channels, channel_report = apply_channel_and_detector_effects(
+        ideal_pattern,
+        params,
+    )
 
-    coincidence_detected = is_informative_detection(detected_channels, detection_mode)
-    full_pattern_available = all(detected_channels)
+    detection_status = evaluate_detection_status(detected_channels, detection_mode)
 
-    # For article-state decoding we need a complete 4-channel polarization pattern.
-    # This also fixes the previous bug where 0000 was wrongly treated as "no clicks".
-    packet_detected = full_pattern_available
-    was_lost = not packet_detected
+    arrival_times, coincidence_passed = simulate_arrival_times(
+        detected_channels,
+        params,
+    )
+
+    packet_detected = detection_status["packet_detected"]
+    fourfold_detected = detection_status["fourfold_detected"]
+    full_pattern_available = detection_status["full_pattern_available"]
+
+    postselection_passed = fourfold_detected and coincidence_passed and full_pattern_available
+    rejection_reason = infer_rejection_reason(
+        channel_report,
+        detection_status["rejection_reason"],
+        coincidence_passed,
+    )
+
+    observed_pattern_for_decoding = observed_pattern
+    if not full_pattern_available:
+        observed_pattern_for_decoding = None
 
     decoded_state = None
     decoded_bits = None
     decoding_confidence = 0.0
     is_correct = False
 
-    if packet_detected:
+    if postselection_passed and observed_pattern_for_decoding is not None:
         decoded_state, decoding_confidence = decode_state_from_pattern_with_pr(
-            observed_pattern,
+            observed_pattern_for_decoding,
             effective_pr_angles,
         )
         decoded_bits = STATE_TO_BITS[decoded_state]
@@ -783,29 +889,40 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
         "ideal_pattern": ideal_pattern,
         "observed_pattern": observed_pattern,
         "detected_channels": detected_channels,
-        "coincidence_detected": coincidence_detected,
-        "full_pattern_available": full_pattern_available,
+        "arrival_times": arrival_times,
+        "coincidence_passed": coincidence_passed,
         "packet_detected": packet_detected,
-        "was_lost": was_lost,
+        "fourfold_detected": fourfold_detected,
+        "full_pattern_available": full_pattern_available,
+        "postselection_passed": postselection_passed,
+        "rejection_reason": rejection_reason,
+        "channel_report": channel_report,
         "decoded_state": decoded_state,
         "decoded_bits": decoded_bits,
         "decoding_confidence": decoding_confidence,
         "is_correct": is_correct,
+        "was_lost": not postselection_passed,
     }
 
 
-
-def format_pattern_tuple(pattern: tuple | None) -> str:
+def format_pattern_tuple(pattern):
     if pattern is None:
         return "—"
+    return "".join("?" if bit is None else str(bit) for bit in pattern)
 
-    rendered = []
-    for bit in pattern:
-        if bit is None:
-            rendered.append("·")
+
+def format_bool_tuple(values):
+    return "(" + ", ".join("T" if value else "F" for value in values) + ")"
+
+
+def format_arrival_times(arrival_times):
+    formatted = []
+    for value in arrival_times:
+        if value is None:
+            formatted.append("—")
         else:
-            rendered.append(str(bit))
-    return "".join(rendered)
+            formatted.append(f"{value:.3e}")
+    return formatted
 
 
 def state_vector_to_amplitude_table(state_vector: np.ndarray, threshold: float = 1e-9) -> pd.DataFrame:
@@ -854,56 +971,44 @@ def probability_dict_to_dataframe(prob_dict: dict) -> pd.DataFrame:
     return df
 
 
-
 def build_single_packet_debug_report(state_label: str, params: dict) -> dict:
     if state_label not in ARTICLE_STATE_VECTORS:
         raise ValueError(f"Unknown article state: {state_label}")
 
     state_vector = ARTICLE_STATE_VECTORS[state_label]
-    detection_mode = params.get("simulation", {}).get("detection_mode", "any_click")
+    detection_mode = params.get("simulation", {}).get("detection_mode", "fourfold")
 
     effective_pr_angles = sample_effective_pr_angles(params)
     rotated_state = apply_pr_rotations_to_state(state_vector, effective_pr_angles)
 
     ideal_probabilities = joint_pattern_probabilities_in_standard_basis(rotated_state)
-    ideal_pattern = sample_joint_pattern(ideal_probabilities)
-    observed_pattern, detected_channels = apply_channel_and_detector_effects(ideal_pattern, params)
-
-    coincidence_detected = is_informative_detection(detected_channels, detection_mode)
-    full_pattern_available = all(detected_channels)
-    packet_detected = full_pattern_available
-
-    decoded_state = None
-    decoded_bits = None
-    decoding_confidence = 0.0
-
-    if packet_detected:
-        decoded_state, decoding_confidence = decode_state_from_pattern_with_pr(
-            observed_pattern,
-            effective_pr_angles,
-        )
-        decoded_bits = STATE_TO_BITS[decoded_state]
+    single_result = simulate_single_state_transmission(state_label, params)
 
     return {
         "sent_state": state_label,
         "sent_bits": STATE_TO_BITS[state_label],
         "detection_mode": detection_mode,
-        "effective_pr_angles": effective_pr_angles,
+        "effective_pr_angles": single_result["effective_pr_angles"],
         "initial_state_amplitudes": state_vector_to_amplitude_table(state_vector),
         "rotated_state_amplitudes": state_vector_to_amplitude_table(rotated_state),
         "ideal_probability_table": probability_dict_to_dataframe(ideal_probabilities),
-        "ideal_pattern": ideal_pattern,
-        "observed_pattern": observed_pattern,
-        "detected_channels": detected_channels,
-        "coincidence_detected": coincidence_detected,
-        "full_pattern_available": full_pattern_available,
-        "packet_detected": packet_detected,
-        "decoded_state": decoded_state,
-        "decoded_bits": decoded_bits,
-        "decoding_confidence": decoding_confidence,
-        "is_correct": decoded_state == state_label if decoded_state is not None else False,
-        "ideal_probability_of_sampled_pattern": float(ideal_probabilities.get(ideal_pattern, 0.0)),
-        "observed_pattern_same_as_ideal": observed_pattern == ideal_pattern,
+        "ideal_pattern": single_result["ideal_pattern"],
+        "observed_pattern": single_result["observed_pattern"],
+        "detected_channels": single_result["detected_channels"],
+        "arrival_times": single_result["arrival_times"],
+        "coincidence_passed": single_result["coincidence_passed"],
+        "packet_detected": single_result["packet_detected"],
+        "fourfold_detected": single_result["fourfold_detected"],
+        "full_pattern_available": single_result["full_pattern_available"],
+        "postselection_passed": single_result["postselection_passed"],
+        "rejection_reason": single_result["rejection_reason"],
+        "channel_report": single_result["channel_report"],
+        "decoded_state": single_result["decoded_state"],
+        "decoded_bits": single_result["decoded_bits"],
+        "decoding_confidence": single_result["decoding_confidence"],
+        "is_correct": single_result["is_correct"],
+        "ideal_probability_of_sampled_pattern": float(ideal_probabilities.get(single_result["ideal_pattern"], 0.0)),
+        "observed_pattern_same_as_ideal": single_result["observed_pattern"] == single_result["ideal_pattern"],
     }
 
 
@@ -989,6 +1094,42 @@ def build_physics_model_check(params: dict) -> dict:
     }
 
 
+def summarize_rejection_stats(results: list[dict]) -> dict:
+    stats = {
+        "accepted": 0,
+        "failed_postselection": 0,
+        "not_fourfold": 0,
+        "failed_coincidence": 0,
+        "channel_loss_related": 0,
+        "detector_miss_related": 0,
+        "no_channels_detected": 0,
+    }
+
+    for result in results:
+        if result["postselection_passed"]:
+            stats["accepted"] += 1
+            continue
+
+        stats["failed_postselection"] += 1
+
+        if not result["fourfold_detected"]:
+            stats["not_fourfold"] += 1
+
+        if not result["coincidence_passed"]:
+            stats["failed_coincidence"] += 1
+
+        if result["rejection_reason"] == "no channels detected":
+            stats["no_channels_detected"] += 1
+
+        if any(row["lost_in_channel"] for row in result["channel_report"]):
+            stats["channel_loss_related"] += 1
+
+        if any(row["detector_miss"] for row in result["channel_report"]):
+            stats["detector_miss_related"] += 1
+
+    return stats
+
+
 def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
     results = []
 
@@ -1003,6 +1144,9 @@ def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
     total_detected = 0
     total_lost = 0
     total_correct = 0
+    total_fourfold = 0
+    total_postselected = 0
+    total_coincidence_passed = 0
 
     for state_label in state_sequence:
         result = simulate_single_state_transmission(state_label, params)
@@ -1010,6 +1154,15 @@ def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
 
         if result["packet_detected"]:
             total_detected += 1
+
+        if result["fourfold_detected"]:
+            total_fourfold += 1
+
+        if result["coincidence_passed"]:
+            total_coincidence_passed += 1
+
+        if result["postselection_passed"]:
+            total_postselected += 1
             decoded_state = result["decoded_state"]
             confusion_matrix[state_label][decoded_state] += 1
 
@@ -1019,7 +1172,10 @@ def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
             total_lost += 1
 
     detection_rate = total_detected / total_sent if total_sent else 0.0
-    symbol_accuracy = total_correct / total_detected if total_detected else 0.0
+    fourfold_rate = total_fourfold / total_sent if total_sent else 0.0
+    postselection_rate = total_postselected / total_sent if total_sent else 0.0
+    coincidence_rate = total_coincidence_passed / total_sent if total_sent else 0.0
+    symbol_accuracy = total_correct / total_postselected if total_postselected else 0.0
     loss_rate = total_lost / total_sent if total_sent else 0.0
 
     return {
@@ -1027,12 +1183,19 @@ def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
         "confusion_matrix": confusion_matrix,
         "total_sent": total_sent,
         "total_detected": total_detected,
+        "total_fourfold": total_fourfold,
+        "total_postselected": total_postselected,
+        "total_coincidence_passed": total_coincidence_passed,
         "total_lost": total_lost,
         "total_correct": total_correct,
         "detection_rate": detection_rate,
+        "fourfold_rate": fourfold_rate,
+        "postselection_rate": postselection_rate,
+        "coincidence_rate": coincidence_rate,
         "symbol_accuracy": symbol_accuracy,
         "loss_rate": loss_rate,
-        "detection_mode": params.get("simulation", {}).get("detection_mode", "any_click"),
+        "detection_mode": params.get("simulation", {}).get("detection_mode", "fourfold"),
+        "rejection_stats": summarize_rejection_stats(results),
     }
 
 
@@ -1098,6 +1261,7 @@ def clone_params_without_eve(params):
         "detectors": {},
         "beam_splitters": {},
         "simulation": params.get("simulation", {}).copy(),
+        "timing": params.get("timing", {}).copy(),
     }
 
     for ch_name, ch_data in params["channels"].items():
@@ -1105,6 +1269,7 @@ def clone_params_without_eve(params):
             "loss": ch_data["loss"],
             "eve": False,
             "eve_disturbance": ch_data["eve_disturbance"],
+            "length": ch_data.get("length", 10.0),
         }
 
     for pr_name, pr_data in params["pr"].items():
@@ -1135,6 +1300,7 @@ def clone_ideal_params(params: dict) -> dict:
         "detectors": {},
         "beam_splitters": {},
         "simulation": params.get("simulation", {}).copy(),
+        "timing": params.get("timing", {}).copy(),
     }
 
     for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
@@ -1142,6 +1308,7 @@ def clone_ideal_params(params: dict) -> dict:
             "loss": 0.0,
             "eve": False,
             "eve_disturbance": 0.0,
+            "length": params["channels"][channel_name].get("length", 10.0),
         }
 
     for pr_name in ["pr_1", "pr_2", "pr_3", "pr_4"]:
@@ -1177,24 +1344,39 @@ def run_ideal_self_test(trials_per_state: int, params: dict) -> dict:
     for state_label in ["psi1", "psi2", "psi3", "psi4"]:
         correct_count = 0
         detected_count = 0
+        fourfold_count = 0
+        postselection_count = 0
+        coincidence_count = 0
 
         for _ in range(trials_per_state):
             result = simulate_single_state_transmission(state_label, ideal_params)
 
             if result["packet_detected"]:
                 detected_count += 1
+
+            if result["fourfold_detected"]:
+                fourfold_count += 1
+
+            if result["coincidence_passed"]:
+                coincidence_count += 1
+
+            if result["postselection_passed"]:
+                postselection_count += 1
                 decoded_state = result["decoded_state"]
                 confusion_matrix[state_label][decoded_state] += 1
 
                 if decoded_state == state_label:
                     correct_count += 1
 
-        accuracy = correct_count / detected_count if detected_count else 0.0
+        accuracy = correct_count / postselection_count if postselection_count else 0.0
 
         rows.append({
             "state": state_label,
             "trials": trials_per_state,
             "detected": detected_count,
+            "fourfold_detected": fourfold_count,
+            "coincidence_passed": coincidence_count,
+            "postselection_passed": postselection_count,
             "correct": correct_count,
             "accuracy": accuracy,
         })
@@ -1314,15 +1496,12 @@ def generate_text_analysis(result_no_eve, result_attack):
     if detected_attack > detected_no_eve:
         lines.append(
             f"With Eve, the number of detected packets increased from **{detected_no_eve}** to **{detected_attack}** "
-            f"(change: **{delta_detected:+d}**). "
-            "This may happen in the current simplified model because Eve-induced disturbance and detector dark counts "
-            "can create additional clicks."
+            f"(change: **{delta_detected:+d}**)."
         )
     elif detected_attack < detected_no_eve:
         lines.append(
             f"With Eve, the number of detected packets decreased from **{detected_no_eve}** to **{detected_attack}** "
-            f"(change: **{delta_detected:+d}**). "
-            "This indicates that the attack reduces the probability of preserving the expected multi-photon detection pattern."
+            f"(change: **{delta_detected:+d}**)."
         )
     else:
         lines.append(f"The number of detected packets stayed the same: **{detected_no_eve}**.")
@@ -1333,15 +1512,12 @@ def generate_text_analysis(result_no_eve, result_attack):
         lines.append(
             f"The QBER increased from **{qber_no_eve:.3f}** to **{qber_attack:.3f}** "
             f"(change: **{delta_qber:+.3f}**), and the number of errors changed from "
-            f"**{errors_no_eve}** to **{errors_attack}** (**{delta_errors:+d}**). "
-            "This means that Eve makes the decoded result less consistent with the sent state."
+            f"**{errors_no_eve}** to **{errors_attack}** (**{delta_errors:+d}**)."
         )
     elif qber_attack < qber_no_eve:
         lines.append(
             f"The QBER decreased from **{qber_no_eve:.3f}** to **{qber_attack:.3f}** "
-            f"(change: **{delta_qber:+.3f}**). "
-            "For a realistic attack this is unusual, so this would most likely indicate that the current simplified stochastic model "
-            "and finite sampling fluctuations dominate the result."
+            f"(change: **{delta_qber:+.3f}**)."
         )
     else:
         lines.append(f"The QBER remained unchanged at **{qber_attack:.3f}**.")
@@ -1351,15 +1527,12 @@ def generate_text_analysis(result_no_eve, result_attack):
     if success_attack > success_no_eve:
         lines.append(
             f"The success rate increased from **{success_no_eve:.3f}** to **{success_attack:.3f}** "
-            f"(change: **{delta_success:+.3f}**). "
-            "In the present model this can occur because 'success' is defined through detection events, "
-            "not yet through the full protocol logic from the article."
+            f"(change: **{delta_success:+.3f}**)."
         )
     elif success_attack < success_no_eve:
         lines.append(
             f"The success rate decreased from **{success_no_eve:.3f}** to **{success_attack:.3f}** "
-            f"(change: **{delta_success:+.3f}**). "
-            "This is consistent with the idea that disturbance in the channel worsens transmission quality."
+            f"(change: **{delta_success:+.3f}**)."
         )
     else:
         lines.append(f"The success rate remained the same at **{success_attack:.3f}**.")
@@ -1367,11 +1540,6 @@ def generate_text_analysis(result_no_eve, result_attack):
     lines.append("")
     if source_mode == "article_state":
         lines.append("**4. State decoding interpretation**")
-        lines.append(
-            "In article-state mode, the main physically meaningful result is not only the total number of clicks, "
-            "but also how often the received multi-detector click pattern is decoded back into the original sent state."
-        )
-
         confusion_attack_df = pd.DataFrame(result_attack["confusion_matrix"]).T
         row_sums_attack = confusion_attack_df.sum(axis=1).replace(0, 1)
         confusion_attack_percent_df = (confusion_attack_df.div(row_sums_attack, axis=0) * 100)
@@ -1386,20 +1554,11 @@ def generate_text_analysis(result_no_eve, result_attack):
                 f"**{best_decoded}** with probability about **{best_value:.1f}%**."
             )
 
-            if best_decoded == selected_state:
-                lines.append("So the dominant decoding channel is still correct.")
-            else:
-                lines.append(
-                    "So the dominant decoding channel is already shifted to another state, "
-                    "which is a strong sign of disturbance."
-                )
-
     lines.append("")
     lines.append("**5. Relation to the article**")
     lines.append(
         "At this stage, the application is functioning as a simplified transmission model based on the article’s 4-photon state structure, "
-        "4 channels, polarization rotations, detector efficiencies, and channel disturbance. "
-        "It is not yet implementing the full communication protocol with time-of-arrival control and channel-order key logic."
+        "4 channels, polarization rotations, detector efficiencies, channel disturbance, and coincidence timing."
     )
 
     return "\n".join(lines)
@@ -1423,53 +1582,27 @@ def generate_message_level_analysis(summary_no_eve, summary_attack):
     lines.append(f"Original text: **{summary_attack['original_text']}**")
     lines.append(f"Detection mode: **{detection_mode}**")
     lines.append("")
-
     lines.append("**1. Detection statistics**")
     lines.append(
-        f"Without Eve, **{seq_no_eve['total_detected']}** out of **{seq_no_eve['total_sent']}** "
-        f"2-bit blocks were detected (**{seq_no_eve['detection_rate']:.3f}**)."
+        f"Without Eve, **{seq_no_eve['total_postselected']}** out of **{seq_no_eve['total_sent']}** "
+        f"2-bit blocks passed postselection (**{seq_no_eve['postselection_rate']:.3f}**)."
     )
     lines.append(
-        f"With Eve, **{seq_attack['total_detected']}** out of **{seq_attack['total_sent']}** "
-        f"2-bit blocks were detected (**{seq_attack['detection_rate']:.3f}**)."
+        f"With Eve, **{seq_attack['total_postselected']}** out of **{seq_attack['total_sent']}** "
+        f"2-bit blocks passed postselection (**{seq_attack['postselection_rate']:.3f}**)."
     )
     lines.append("")
-
     lines.append("**2. Symbol-level accuracy**")
     lines.append(f"Without Eve, SER = **{ser_no_eve:.3f}**.")
     lines.append(f"With Eve, SER = **{ser_attack:.3f}**.")
     lines.append("")
-
     lines.append("**3. Bit-level accuracy**")
     lines.append(f"Without Eve, BER = **{ber_no_eve:.3f}**.")
     lines.append(f"With Eve, BER = **{ber_attack:.3f}**.")
     lines.append("")
-
-    lines.append("**4. Losses**")
-    lines.append(
-        f"Without Eve, **{seq_no_eve['total_lost']}** blocks were lost "
-        f"(**{seq_no_eve['loss_rate']:.3f}**)."
-    )
-    lines.append(
-        f"With Eve, **{seq_attack['total_lost']}** blocks were lost "
-        f"(**{seq_attack['loss_rate']:.3f}**)."
-    )
-    lines.append("")
-
-    lines.append("**5. Recovered text**")
+    lines.append("**4. Recovered text**")
     lines.append(f"Without Eve: `{summary_no_eve['recovered_text']}`")
     lines.append(f"With Eve: `{summary_attack['recovered_text']}`")
-    lines.append("")
-
-    if ber_attack > ber_no_eve:
-        lines.append("Eve increases the bit-level distortion of the transmitted message.")
-    elif ber_attack < ber_no_eve:
-        lines.append(
-            "In this run the attack appears to improve bit-level recovery, which is usually a sign that the simplified "
-            "stochastic model or finite sampling still dominates the result."
-        )
-    else:
-        lines.append("The bit-level error rate stayed unchanged in this run.")
 
     return "\n".join(lines)
 
@@ -1507,6 +1640,8 @@ def run_simple_simulation(params):
         "psi4": {"psi1": 0, "psi2": 0, "psi3": 0, "psi4": 0},
     }
 
+    postselected = 0
+
     for _ in range(num_packets):
         if random.random() > pair_eff:
             continue
@@ -1519,7 +1654,8 @@ def run_simple_simulation(params):
             single_result = simulate_single_state_transmission(selected_state_label, params)
             packet_detected = single_result["packet_detected"]
 
-            if packet_detected:
+            if single_result["postselection_passed"]:
+                postselected += 1
                 decoded_state = single_result["decoded_state"]
                 decoded_state_counts[decoded_state] += 1
                 confusion_matrix[selected_state_label][decoded_state] += 1
@@ -1536,7 +1672,13 @@ def run_simple_simulation(params):
                 pr = params["pr"][pr_name]
                 detector = params["detectors"][detector_name]
 
-                if random.random() < channel["loss"]:
+                loss_prob = channel["loss"]
+                if channel_name in ["channel_2", "channel_3"]:
+                    loss_prob = min(1.0, loss_prob + params["beam_splitters"]["bs_right"]["loss"])
+                else:
+                    loss_prob = min(1.0, loss_prob + params["beam_splitters"]["bs_left"]["loss"])
+
+                if random.random() < loss_prob:
                     continue
 
                 channel_state_angle = params["source"]["state_angles"][channel_name]
@@ -1575,13 +1717,14 @@ def run_simple_simulation(params):
                 errors += 1
 
     success_rate = detected / num_packets if num_packets else 0.0
-    qber = errors / detected if detected else 0.0
+    qber = errors / postselected if postselected else 0.0
 
     return {
         "message": message,
         "num_packets": num_packets,
         "transmitted": transmitted,
         "detected": detected,
+        "postselected": postselected,
         "errors": errors,
         "success_rate": success_rate,
         "qber": qber,
@@ -1590,7 +1733,7 @@ def run_simple_simulation(params):
         "source_mode": source_mode,
         "decoded_state_counts": decoded_state_counts,
         "confusion_matrix": confusion_matrix,
-        "detection_mode": params.get("simulation", {}).get("detection_mode", "any_click"),
+        "detection_mode": params.get("simulation", {}).get("detection_mode", "fourfold"),
     }
 
 
@@ -1667,8 +1810,35 @@ with right_col:
 
             detection_mode = st.selectbox(
                 "Detection mode",
-                ["any_click", "fourfold"],
-                index=0 if params["simulation"]["detection_mode"] == "any_click" else 1,
+                ["fourfold", "any_click"],
+                index=0 if params["simulation"]["detection_mode"] == "fourfold" else 1,
+            )
+
+            timing_speed = st.number_input(
+                "Propagation speed (m/s)",
+                min_value=1e6,
+                max_value=3e8,
+                value=float(params["timing"]["speed"]),
+                step=1e6,
+                format="%.3e",
+            )
+
+            coincidence_window = st.number_input(
+                "Coincidence window (s)",
+                min_value=1e-12,
+                max_value=1e-6,
+                value=float(params["timing"]["coincidence_window"]),
+                step=1e-10,
+                format="%.3e",
+            )
+
+            detector_jitter = st.number_input(
+                "Detector jitter (s)",
+                min_value=0.0,
+                max_value=1e-6,
+                value=float(params["timing"]["detector_jitter"]),
+                step=1e-10,
+                format="%.3e",
             )
 
             st.caption("Main physics path is fixed: article state → PR rotations → measurement in the standard x/y basis.")
@@ -1733,6 +1903,9 @@ with right_col:
                 params["source"]["mode"] = mode
                 params["source"]["article_state_label"] = article_state_label
                 params["simulation"]["detection_mode"] = detection_mode
+                params["timing"]["speed"] = float(timing_speed)
+                params["timing"]["coincidence_window"] = float(coincidence_window)
+                params["timing"]["detector_jitter"] = float(detector_jitter)
 
                 if mode == "article_state":
                     params["source"]["selected_state_label"] = article_state_label
@@ -1768,12 +1941,21 @@ with right_col:
                 0.01,
             )
 
+            length = st.number_input(
+                "Channel length (m)",
+                min_value=0.1,
+                max_value=100000.0,
+                value=float(params["channels"][selected]["length"]),
+                step=0.1,
+            )
+
             submitted = st.form_submit_button("Apply channel settings")
 
             if submitted:
                 params["channels"][selected]["eve"] = eve
                 params["channels"][selected]["loss"] = loss
                 params["channels"][selected]["eve_disturbance"] = eve_disturbance
+                params["channels"][selected]["length"] = float(length)
 
     elif selected.startswith("pr"):
         st.markdown(f"### {selected}")
@@ -1925,8 +2107,14 @@ with st.expander("Single packet debug view", expanded=False):
         metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
         metric_col1.metric("Ideal sampled pattern", format_pattern_tuple(debug_report["ideal_pattern"]))
         metric_col2.metric("Observed pattern", format_pattern_tuple(debug_report["observed_pattern"]))
-        metric_col3.metric("Coincidence detected", "yes" if debug_report["coincidence_detected"] else "no")
+        metric_col3.metric("Detected channels", format_bool_tuple(debug_report["detected_channels"]))
         metric_col4.metric("Decoded state", debug_report["decoded_state"] or "lost")
+
+        metric_col5, metric_col6, metric_col7, metric_col8 = st.columns(4)
+        metric_col5.metric("Fourfold", "yes" if debug_report["fourfold_detected"] else "no")
+        metric_col6.metric("Coincidence", "yes" if debug_report["coincidence_passed"] else "no")
+        metric_col7.metric("Postselection", "yes" if debug_report["postselection_passed"] else "no")
+        metric_col8.metric("Reason", debug_report["rejection_reason"] or "accepted")
 
         st.markdown("#### Step 1. Effective PR angles used in this packet")
         st.json(debug_report["effective_pr_angles"])
@@ -1940,11 +2128,19 @@ with st.expander("Single packet debug view", expanded=False):
         st.markdown("#### Step 4. Probabilities of all 16 detector patterns")
         st.dataframe(debug_report["ideal_probability_table"], use_container_width=True)
 
-        st.markdown("#### Step 5. Packet interpretation")
+        st.markdown("#### Step 5. Timing diagnostics")
+        st.write("Arrival times (s):", format_arrival_times(debug_report["arrival_times"]))
+
+        st.markdown("#### Step 6. Channel-by-channel diagnostics")
+        channel_df = pd.DataFrame(debug_report["channel_report"]).copy()
+        if not channel_df.empty:
+            for col in ["lost_in_channel", "detected", "detector_miss", "dark_count_used", "eve_disturbed"]:
+                channel_df[col] = channel_df[col].map({True: "yes", False: "no"})
+        st.dataframe(channel_df, use_container_width=True)
+
+        st.markdown("#### Step 7. Packet interpretation")
         st.write("Probability of sampled ideal pattern:", f"{debug_report['ideal_probability_of_sampled_pattern']:.6f}")
-        st.write("Detected channels:", debug_report["detected_channels"])
         st.write("Observed pattern stayed equal to ideal pattern:", debug_report["observed_pattern_same_as_ideal"])
-        st.write("Full 4-channel pattern available:", debug_report["full_pattern_available"])
         st.write("Decoded bits:", debug_report["decoded_bits"] if debug_report["decoded_bits"] is not None else "—")
         st.write("Decoding confidence:", f"{debug_report['decoding_confidence']:.6f}")
         st.write("Decoded correctly:", debug_report["is_correct"])
@@ -1964,12 +2160,19 @@ with st.expander("Message transmission test", expanded=False):
         st.write("Detection mode:", seq["detection_mode"])
         st.write("Total sent:", seq["total_sent"])
         st.write("Total detected:", seq["total_detected"])
+        st.write("Total fourfold:", seq["total_fourfold"])
+        st.write("Total coincidence passed:", seq["total_coincidence_passed"])
+        st.write("Total postselected:", seq["total_postselected"])
         st.write("Total lost:", seq["total_lost"])
         st.write("Detection rate:", f"{seq['detection_rate']:.3f}")
+        st.write("Fourfold rate:", f"{seq['fourfold_rate']:.3f}")
+        st.write("Coincidence rate:", f"{seq['coincidence_rate']:.3f}")
+        st.write("Postselection rate:", f"{seq['postselection_rate']:.3f}")
         st.write("Symbol accuracy:", f"{seq['symbol_accuracy']:.3f}")
         st.write("Loss rate:", f"{seq['loss_rate']:.3f}")
         st.write("BER:", f"{message_result['ber_stats']['ber']:.3f}")
         st.write("SER:", f"{message_result['ser_stats']['ser']:.3f}")
+        st.write("Rejection stats:", seq["rejection_stats"])
 
         st.write("Recovered bits raw:", message_result["recovered_bits_raw"])
         st.write("Recovered bits clean:", message_result["recovered_bits_clean"])
@@ -2018,6 +2221,7 @@ else:
     with col1:
         st.markdown("### Without Eve")
         st.metric("Packets detected", result_no_eve["detected"])
+        st.metric("Packets postselected", result_no_eve["postselected"])
         st.metric("Errors", result_no_eve["errors"])
         st.metric("Success rate", f"{result_no_eve['success_rate']:.3f}")
         st.metric("QBER", f"{result_no_eve['qber']:.3f}")
@@ -2025,6 +2229,7 @@ else:
     with col2:
         st.markdown("### With Eve")
         st.metric("Packets detected", result_attack["detected"])
+        st.metric("Packets postselected", result_attack["postselected"])
         st.metric("Errors", result_attack["errors"])
         st.metric("Success rate", f"{result_attack['success_rate']:.3f}")
         st.metric("QBER", f"{result_attack['qber']:.3f}")
@@ -2103,18 +2308,18 @@ else:
 
     with msg_col1:
         st.markdown("### Without Eve")
-        st.metric("Detected 2-bit blocks", seq_no_eve["total_detected"])
+        st.metric("Postselected 2-bit blocks", seq_no_eve["total_postselected"])
         st.metric("Lost 2-bit blocks", seq_no_eve["total_lost"])
-        st.metric("Detection rate", f"{seq_no_eve['detection_rate']:.3f}")
+        st.metric("Postselection rate", f"{seq_no_eve['postselection_rate']:.3f}")
         st.metric("Symbol accuracy", f"{seq_no_eve['symbol_accuracy']:.3f}")
         st.metric("BER", f"{message_no_eve['ber_stats']['ber']:.3f}")
         st.metric("SER", f"{message_no_eve['ser_stats']['ser']:.3f}")
 
     with msg_col2:
         st.markdown("### With Eve")
-        st.metric("Detected 2-bit blocks", seq_attack["total_detected"])
+        st.metric("Postselected 2-bit blocks", seq_attack["total_postselected"])
         st.metric("Lost 2-bit blocks", seq_attack["total_lost"])
-        st.metric("Detection rate", f"{seq_attack['detection_rate']:.3f}")
+        st.metric("Postselection rate", f"{seq_attack['postselection_rate']:.3f}")
         st.metric("Symbol accuracy", f"{seq_attack['symbol_accuracy']:.3f}")
         st.metric("BER", f"{message_attack['ber_stats']['ber']:.3f}")
         st.metric("SER", f"{message_attack['ser_stats']['ser']:.3f}")
