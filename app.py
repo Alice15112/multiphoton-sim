@@ -652,20 +652,38 @@ def decode_state_from_pattern(observed_pattern, effective_angles):
     return best_state, best_prob
 
 
+
 def apply_channel_and_detector_effects(
     ideal_pattern: tuple,
     params: dict
-) -> tuple:
+) -> tuple[tuple, tuple]:
+    """
+    IMPORTANT:
+    ideal_pattern stores polarization outcomes in the measurement basis:
+        0 -> x polarization
+        1 -> y polarization
+
+    It does NOT mean "no click / click".
+
+    Therefore we keep two separate objects:
+    - observed_polarization_pattern: tuple[int | None, ...]
+      * 0 / 1 if a polarization outcome was observed
+      * None if that channel was not detected at all
+    - detected_channels: tuple[bool, ...]
+      * True if the channel produced a detector event
+      * False if the channel was lost / missed without a dark count
+    """
     channel_names = ["channel_1", "channel_2", "channel_3", "channel_4"]
     detector_names = ["detector_1", "detector_2", "detector_3", "detector_4"]
 
-    observed_pattern = []
+    observed_polarization_pattern = []
+    detected_channels = []
 
     for idx, (channel_name, detector_name) in enumerate(zip(channel_names, detector_names)):
         channel = params["channels"][channel_name]
         detector = params["detectors"][detector_name]
 
-        ideal_click = ideal_pattern[idx]
+        ideal_polarization = ideal_pattern[idx]
 
         total_loss = channel["loss"]
 
@@ -674,34 +692,50 @@ def apply_channel_and_detector_effects(
         else:
             total_loss = min(1.0, total_loss + params["beam_splitters"]["bs_left"]["loss"])
 
-        if random.random() < total_loss:
-            click = 1 if random.random() < detector["dark"] else 0
+        photon_lost = random.random() < total_loss
+
+        detected = False
+        observed_polarization = None
+
+        if photon_lost:
+            # No photon arrived. A dark count may still happen, but then the
+            # registered polarization outcome is effectively random.
+            if random.random() < detector["dark"]:
+                detected = True
+                observed_polarization = random.randint(0, 1)
         else:
-            if ideal_click == 1:
-                click = 1 if random.random() < detector["eta"] else 0
+            # Photon arrived. Detector may register it with efficiency eta.
+            if random.random() < detector["eta"]:
+                detected = True
+                observed_polarization = ideal_polarization
             else:
-                click = 0
+                # Missed photon; a dark count can still create a fake click.
+                if random.random() < detector["dark"]:
+                    detected = True
+                    observed_polarization = random.randint(0, 1)
 
-            if click == 0 and random.random() < detector["dark"]:
-                click = 1
-
-        if channel["eve"]:
+        # Eve disturbance acts on the observed polarization value, not on the
+        # fact of "whether the bit is 0 or 1".
+        if detected and channel["eve"]:
             if random.random() < channel.get("eve_disturbance", 0.0):
-                click = 1 - click
+                observed_polarization = 1 - observed_polarization
 
-        observed_pattern.append(click)
+        observed_polarization_pattern.append(observed_polarization)
+        detected_channels.append(detected)
 
-    return tuple(observed_pattern)
+    return tuple(observed_polarization_pattern), tuple(detected_channels)
 
 
-def is_informative_detection(pattern: tuple, mode: str = "any_click") -> bool:
+
+def is_informative_detection(detected_channels: tuple, mode: str = "any_click") -> bool:
     if mode == "any_click":
-        return any(pattern)
+        return any(detected_channels)
 
     if mode == "fourfold":
-        return all(click == 1 for click in pattern)
+        return all(detected_channels)
 
     raise ValueError(f"Unknown detection mode: {mode}")
+
 
 
 def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
@@ -719,9 +753,14 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
     joint_probs = joint_pattern_probabilities_in_standard_basis(rotated_state)
     ideal_pattern = sample_joint_pattern(joint_probs)
 
-    observed_pattern = apply_channel_and_detector_effects(ideal_pattern, params)
+    observed_pattern, detected_channels = apply_channel_and_detector_effects(ideal_pattern, params)
 
-    packet_detected = is_informative_detection(observed_pattern, detection_mode)
+    coincidence_detected = is_informative_detection(detected_channels, detection_mode)
+    full_pattern_available = all(detected_channels)
+
+    # For article-state decoding we need a complete 4-channel polarization pattern.
+    # This also fixes the previous bug where 0000 was wrongly treated as "no clicks".
+    packet_detected = full_pattern_available
     was_lost = not packet_detected
 
     decoded_state = None
@@ -743,6 +782,9 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
         "effective_pr_angles": effective_pr_angles,
         "ideal_pattern": ideal_pattern,
         "observed_pattern": observed_pattern,
+        "detected_channels": detected_channels,
+        "coincidence_detected": coincidence_detected,
+        "full_pattern_available": full_pattern_available,
         "packet_detected": packet_detected,
         "was_lost": was_lost,
         "decoded_state": decoded_state,
@@ -752,10 +794,18 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
     }
 
 
+
 def format_pattern_tuple(pattern: tuple | None) -> str:
     if pattern is None:
         return "—"
-    return "".join(str(bit) for bit in pattern)
+
+    rendered = []
+    for bit in pattern:
+        if bit is None:
+            rendered.append("·")
+        else:
+            rendered.append(str(bit))
+    return "".join(rendered)
 
 
 def state_vector_to_amplitude_table(state_vector: np.ndarray, threshold: float = 1e-9) -> pd.DataFrame:
@@ -804,6 +854,7 @@ def probability_dict_to_dataframe(prob_dict: dict) -> pd.DataFrame:
     return df
 
 
+
 def build_single_packet_debug_report(state_label: str, params: dict) -> dict:
     if state_label not in ARTICLE_STATE_VECTORS:
         raise ValueError(f"Unknown article state: {state_label}")
@@ -816,9 +867,11 @@ def build_single_packet_debug_report(state_label: str, params: dict) -> dict:
 
     ideal_probabilities = joint_pattern_probabilities_in_standard_basis(rotated_state)
     ideal_pattern = sample_joint_pattern(ideal_probabilities)
-    observed_pattern = apply_channel_and_detector_effects(ideal_pattern, params)
+    observed_pattern, detected_channels = apply_channel_and_detector_effects(ideal_pattern, params)
 
-    packet_detected = is_informative_detection(observed_pattern, detection_mode)
+    coincidence_detected = is_informative_detection(detected_channels, detection_mode)
+    full_pattern_available = all(detected_channels)
+    packet_detected = full_pattern_available
 
     decoded_state = None
     decoded_bits = None
@@ -841,6 +894,9 @@ def build_single_packet_debug_report(state_label: str, params: dict) -> dict:
         "ideal_probability_table": probability_dict_to_dataframe(ideal_probabilities),
         "ideal_pattern": ideal_pattern,
         "observed_pattern": observed_pattern,
+        "detected_channels": detected_channels,
+        "coincidence_detected": coincidence_detected,
+        "full_pattern_available": full_pattern_available,
         "packet_detected": packet_detected,
         "decoded_state": decoded_state,
         "decoded_bits": decoded_bits,
@@ -1869,7 +1925,7 @@ with st.expander("Single packet debug view", expanded=False):
         metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
         metric_col1.metric("Ideal sampled pattern", format_pattern_tuple(debug_report["ideal_pattern"]))
         metric_col2.metric("Observed pattern", format_pattern_tuple(debug_report["observed_pattern"]))
-        metric_col3.metric("Packet detected", "yes" if debug_report["packet_detected"] else "no")
+        metric_col3.metric("Coincidence detected", "yes" if debug_report["coincidence_detected"] else "no")
         metric_col4.metric("Decoded state", debug_report["decoded_state"] or "lost")
 
         st.markdown("#### Step 1. Effective PR angles used in this packet")
@@ -1886,7 +1942,9 @@ with st.expander("Single packet debug view", expanded=False):
 
         st.markdown("#### Step 5. Packet interpretation")
         st.write("Probability of sampled ideal pattern:", f"{debug_report['ideal_probability_of_sampled_pattern']:.6f}")
+        st.write("Detected channels:", debug_report["detected_channels"])
         st.write("Observed pattern stayed equal to ideal pattern:", debug_report["observed_pattern_same_as_ideal"])
+        st.write("Full 4-channel pattern available:", debug_report["full_pattern_available"])
         st.write("Decoded bits:", debug_report["decoded_bits"] if debug_report["decoded_bits"] is not None else "—")
         st.write("Decoding confidence:", f"{debug_report['decoding_confidence']:.6f}")
         st.write("Decoded correctly:", debug_report["is_correct"])
