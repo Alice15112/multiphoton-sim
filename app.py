@@ -51,10 +51,10 @@ if "scheme_params" not in st.session_state:
             },
         },
         "channels": {
-            "channel_1": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "length": 10.0},
-            "channel_2": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "length": 10.0},
-            "channel_3": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "length": 10.0},
-            "channel_4": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "length": 10.0},
+            "channel_1": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "eve_delay": 0.0, "length": 10.0},
+            "channel_2": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "eve_delay": 0.0, "length": 10.0},
+            "channel_3": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "eve_delay": 0.0, "length": 10.0},
+            "channel_4": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "eve_delay": 0.0, "length": 10.0},
         },
         "pr": {
             "pr_1": {"angle": 0.0, "error": 0.0},
@@ -146,6 +146,8 @@ if "timing" not in params:
 for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
     if "length" not in params["channels"][channel_name]:
         params["channels"][channel_name]["length"] = 10.0
+    if "eve_delay" not in params["channels"][channel_name]:
+        params["channels"][channel_name]["eve_delay"] = 0.0
 
 left_col, right_col = st.columns([2, 1])
 
@@ -784,7 +786,7 @@ def evaluate_detection_status(detected_channels: tuple, mode: str = "fourfold") 
     }
 
 
-def simulate_arrival_times(detected_channels: tuple, params: dict):
+def simulate_arrival_times(detected_channels: tuple, params: dict) -> dict:
     speed = params["timing"]["speed"]
     window = params["timing"]["coincidence_window"]
     jitter = params["timing"]["detector_jitter"]
@@ -793,25 +795,38 @@ def simulate_arrival_times(detected_channels: tuple, params: dict):
 
     for idx, detected in enumerate(detected_channels):
         channel_name = f"channel_{idx + 1}"
-        length = params["channels"][channel_name]["length"]
+        channel = params["channels"][channel_name]
 
-        if detected:
-            base_time = length / speed
-            noise = random.uniform(-jitter, jitter)
-            arrival_times.append(base_time + noise)
-        else:
+        if not detected:
             arrival_times.append(None)
+            continue
 
-    valid_times = [t for t in arrival_times if t is not None]
+        base_time = channel["length"] / speed
+
+        if channel["eve"]:
+            base_time += channel.get("eve_delay", 0.0)
+
+        noise = random.uniform(-jitter, jitter)
+        arrival_times.append(base_time + noise)
+
+    valid_times = [time for time in arrival_times if time is not None]
 
     if len(valid_times) < 2:
+        timing_spread = None
         coincidence_passed = False
+        timing_anomaly = True
     else:
-        t_min = min(valid_times)
-        t_max = max(valid_times)
-        coincidence_passed = (t_max - t_min) <= window
+        timing_spread = max(valid_times) - min(valid_times)
+        coincidence_passed = timing_spread <= window
+        timing_anomaly = not coincidence_passed
 
-    return arrival_times, coincidence_passed
+    return {
+        "arrival_times": arrival_times,
+        "timing_spread": timing_spread,
+        "coincidence_passed": coincidence_passed,
+        "timing_anomaly": timing_anomaly,
+        "coincidence_window": window,
+    }
 
 
 def infer_rejection_reason(channel_report: list[dict], base_reason: str | None, coincidence_passed: bool) -> str | None:
@@ -849,10 +864,14 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
 
     detection_status = evaluate_detection_status(detected_channels, detection_mode)
 
-    arrival_times, coincidence_passed = simulate_arrival_times(
+    timing_result = simulate_arrival_times(
         detected_channels,
         params,
     )
+    arrival_times = timing_result["arrival_times"]
+    timing_spread = timing_result["timing_spread"]
+    coincidence_passed = timing_result["coincidence_passed"]
+    timing_anomaly = timing_result["timing_anomaly"]
 
     packet_detected = detection_status["packet_detected"]
     fourfold_detected = detection_status["fourfold_detected"]
@@ -890,7 +909,10 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
         "observed_pattern": observed_pattern,
         "detected_channels": detected_channels,
         "arrival_times": arrival_times,
+        "timing_spread": timing_spread,
+        "coincidence_window": timing_result["coincidence_window"],
         "coincidence_passed": coincidence_passed,
+        "timing_anomaly": timing_anomaly,
         "packet_detected": packet_detected,
         "fourfold_detected": fourfold_detected,
         "full_pattern_available": full_pattern_available,
@@ -996,7 +1018,10 @@ def build_single_packet_debug_report(state_label: str, params: dict) -> dict:
         "observed_pattern": single_result["observed_pattern"],
         "detected_channels": single_result["detected_channels"],
         "arrival_times": single_result["arrival_times"],
+        "timing_spread": single_result["timing_spread"],
+        "coincidence_window": single_result["coincidence_window"],
         "coincidence_passed": single_result["coincidence_passed"],
+        "timing_anomaly": single_result["timing_anomaly"],
         "packet_detected": single_result["packet_detected"],
         "fourfold_detected": single_result["fourfold_detected"],
         "full_pattern_available": single_result["full_pattern_available"],
@@ -1130,6 +1155,112 @@ def summarize_rejection_stats(results: list[dict]) -> dict:
     return stats
 
 
+
+def combined_channel_loss(channel_name: str, params: dict) -> float:
+    channel_loss = params["channels"][channel_name]["loss"]
+
+    if channel_name in ["channel_2", "channel_3"]:
+        beam_splitter_loss = params["beam_splitters"]["bs_right"]["loss"]
+    else:
+        beam_splitter_loss = params["beam_splitters"]["bs_left"]["loss"]
+
+    return min(1.0, channel_loss + beam_splitter_loss)
+
+
+def estimate_expected_fourfold_rate(params: dict) -> float:
+    rate = 1.0
+
+    for idx, channel_name in enumerate(["channel_1", "channel_2", "channel_3", "channel_4"], start=1):
+        detector_name = f"detector_{idx}"
+        survival_probability = 1.0 - combined_channel_loss(channel_name, params)
+        detection_probability = params["detectors"][detector_name]["eta"]
+        rate *= survival_probability * detection_probability
+
+    return max(0.0, min(1.0, rate))
+
+
+def estimate_expected_timing_status(params: dict) -> dict:
+    speed = params["timing"]["speed"]
+    window = params["timing"]["coincidence_window"]
+
+    expected_arrival_times = []
+    for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
+        channel = params["channels"][channel_name]
+        arrival_time = channel["length"] / speed
+        if channel["eve"]:
+            arrival_time += channel.get("eve_delay", 0.0)
+        expected_arrival_times.append(arrival_time)
+
+    expected_spread = max(expected_arrival_times) - min(expected_arrival_times)
+    expected_coincidence_passed = expected_spread <= window
+
+    return {
+        "expected_arrival_times": expected_arrival_times,
+        "expected_timing_spread": expected_spread,
+        "expected_coincidence_passed": expected_coincidence_passed,
+    }
+
+
+def build_expected_vs_observed_stats(sequence_result: dict, params: dict, tolerance: float = 0.10) -> dict:
+    total_sent = sequence_result["total_sent"]
+    expected_fourfold_rate = estimate_expected_fourfold_rate(params)
+    timing_status = estimate_expected_timing_status(params)
+
+    expected_postselection_rate = (
+        expected_fourfold_rate if timing_status["expected_coincidence_passed"] else 0.0
+    )
+
+    observed_fourfold_rate = sequence_result["fourfold_rate"]
+    observed_postselection_rate = sequence_result["postselection_rate"]
+
+    fourfold_delta = observed_fourfold_rate - expected_fourfold_rate
+    postselection_delta = observed_postselection_rate - expected_postselection_rate
+
+    timing_anomaly_count = sequence_result.get("total_timing_anomaly", 0)
+    timing_anomaly_rate = timing_anomaly_count / total_sent if total_sent else 0.0
+
+    possible_anomaly = (
+        abs(fourfold_delta) > tolerance
+        or abs(postselection_delta) > tolerance
+        or timing_anomaly_rate > tolerance
+    )
+
+    summary_rows = [
+        {
+            "metric": "fourfold_rate",
+            "expected": expected_fourfold_rate,
+            "observed": observed_fourfold_rate,
+            "delta_observed_minus_expected": fourfold_delta,
+        },
+        {
+            "metric": "postselection_rate",
+            "expected": expected_postselection_rate,
+            "observed": observed_postselection_rate,
+            "delta_observed_minus_expected": postselection_delta,
+        },
+        {
+            "metric": "timing_anomaly_rate",
+            "expected": 0.0,
+            "observed": timing_anomaly_rate,
+            "delta_observed_minus_expected": timing_anomaly_rate,
+        },
+    ]
+
+    return {
+        "summary_df": pd.DataFrame(summary_rows),
+        "expected_fourfold_rate": expected_fourfold_rate,
+        "observed_fourfold_rate": observed_fourfold_rate,
+        "expected_postselection_rate": expected_postselection_rate,
+        "observed_postselection_rate": observed_postselection_rate,
+        "fourfold_delta": fourfold_delta,
+        "postselection_delta": postselection_delta,
+        "timing_anomaly_count": timing_anomaly_count,
+        "timing_anomaly_rate": timing_anomaly_rate,
+        "possible_anomaly": possible_anomaly,
+        "tolerance": tolerance,
+        **timing_status,
+    }
+
 def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
     results = []
 
@@ -1147,6 +1278,7 @@ def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
     total_fourfold = 0
     total_postselected = 0
     total_coincidence_passed = 0
+    total_timing_anomaly = 0
 
     for state_label in state_sequence:
         result = simulate_single_state_transmission(state_label, params)
@@ -1160,6 +1292,9 @@ def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
 
         if result["coincidence_passed"]:
             total_coincidence_passed += 1
+
+        if result.get("timing_anomaly", False):
+            total_timing_anomaly += 1
 
         if result["postselection_passed"]:
             total_postselected += 1
@@ -1186,6 +1321,7 @@ def simulate_state_sequence(state_sequence: list[str], params: dict) -> dict:
         "total_fourfold": total_fourfold,
         "total_postselected": total_postselected,
         "total_coincidence_passed": total_coincidence_passed,
+        "total_timing_anomaly": total_timing_anomaly,
         "total_lost": total_lost,
         "total_correct": total_correct,
         "detection_rate": detection_rate,
@@ -1218,6 +1354,7 @@ def keep_only_binary_chars(bitstring: str) -> str:
 def build_message_transmission_summary(text: str, params: dict) -> dict:
     encoded = encode_text_to_states(text)
     sequence_result = simulate_state_sequence(encoded["states"], params)
+    expected_observed_stats = build_expected_vs_observed_stats(sequence_result, params)
 
     recovered_bits_raw = recovered_bits_from_results(sequence_result["results"])
     recovered_bits_clean = keep_only_binary_chars(recovered_bits_raw)
@@ -1236,6 +1373,7 @@ def build_message_transmission_summary(text: str, params: dict) -> dict:
         "bit_pairs": encoded["bit_pairs"],
         "sent_states": encoded["states"],
         "sequence_result": sequence_result,
+        "expected_observed_stats": expected_observed_stats,
         "recovered_bits_raw": recovered_bits_raw,
         "recovered_bits_clean": recovered_bits_clean,
         "recovered_text": recovered_text,
@@ -1269,6 +1407,7 @@ def clone_params_without_eve(params):
             "loss": ch_data["loss"],
             "eve": False,
             "eve_disturbance": ch_data["eve_disturbance"],
+            "eve_delay": ch_data.get("eve_delay", 0.0),
             "length": ch_data.get("length", 10.0),
         }
 
@@ -1308,6 +1447,7 @@ def clone_ideal_params(params: dict) -> dict:
             "loss": 0.0,
             "eve": False,
             "eve_disturbance": 0.0,
+            "eve_delay": 0.0,
             "length": params["channels"][channel_name].get("length", 10.0),
         }
 
@@ -1941,6 +2081,14 @@ with right_col:
                 0.01,
             )
 
+            eve_delay_ns = st.number_input(
+                "Eve delay (ns)",
+                min_value=0.0,
+                max_value=1000.0,
+                value=float(params["channels"][selected].get("eve_delay", 0.0) * 1e9),
+                step=0.1,
+            )
+
             length = st.number_input(
                 "Channel length (m)",
                 min_value=0.1,
@@ -1955,6 +2103,7 @@ with right_col:
                 params["channels"][selected]["eve"] = eve
                 params["channels"][selected]["loss"] = loss
                 params["channels"][selected]["eve_disturbance"] = eve_disturbance
+                params["channels"][selected]["eve_delay"] = eve_delay_ns * 1e-9
                 params["channels"][selected]["length"] = float(length)
 
     elif selected.startswith("pr"):
@@ -2173,6 +2322,16 @@ with st.expander("Message transmission test", expanded=False):
         st.write("BER:", f"{message_result['ber_stats']['ber']:.3f}")
         st.write("SER:", f"{message_result['ser_stats']['ser']:.3f}")
         st.write("Rejection stats:", seq["rejection_stats"])
+
+        st.markdown("### Expected vs observed statistics")
+        expected_stats = message_result["expected_observed_stats"]
+        stat_col1, stat_col2, stat_col3 = st.columns(3)
+        stat_col1.metric("Expected fourfold rate", f"{expected_stats['expected_fourfold_rate']:.3f}")
+        stat_col2.metric("Observed fourfold rate", f"{expected_stats['observed_fourfold_rate']:.3f}")
+        stat_col3.metric("Possible anomaly", "yes" if expected_stats["possible_anomaly"] else "no")
+        st.dataframe(expected_stats["summary_df"], use_container_width=True)
+        st.write("Expected arrival times (s):", format_arrival_times(expected_stats["expected_arrival_times"]))
+        st.write("Expected timing spread (s):", f"{expected_stats['expected_timing_spread']:.3e}")
 
         st.write("Recovered bits raw:", message_result["recovered_bits_raw"])
         st.write("Recovered bits clean:", message_result["recovered_bits_clean"])
