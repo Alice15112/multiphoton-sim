@@ -1920,6 +1920,30 @@ with right_col:
     elif selected == "source":
         st.markdown("### Source S")
 
+        # This selector is intentionally OUTSIDE the form.
+        # Streamlit forms do not redraw conditional form contents until submit,
+        # so mode-dependent settings must be controlled outside the form.
+        if "source_mode_ui" not in st.session_state:
+            st.session_state.source_mode_ui = params["source"].get("mode", "manual")
+
+        mode = st.radio(
+            "Source state mode",
+            ["manual", "article_state"],
+            index=0 if st.session_state.source_mode_ui == "manual" else 1,
+            key="source_mode_ui",
+        )
+
+        if mode == "article_state":
+            st.info(
+                "Article-state mode: manual source polarization angles are hidden. "
+                "The source is one of ψ1..ψ4 from the article."
+            )
+        else:
+            st.info(
+                "Manual mode: the source is configured by independent polarization angles. "
+                "This is mainly a debug mode."
+            )
+
         with st.form("source_form"):
             message = st.text_input(
                 "Message Alice sends",
@@ -1940,12 +1964,6 @@ with right_col:
                 1.0,
                 params["source"]["pair_generation_efficiency"],
                 0.01,
-            )
-
-            mode = st.radio(
-                "Source state mode",
-                ["manual", "article_state"],
-                index=0 if params["source"]["mode"] == "manual" else 1,
             )
 
             detection_mode = st.selectbox(
@@ -1984,6 +2002,10 @@ with right_col:
             st.caption("Main physics path is fixed: article state → PR rotations → measurement in the standard x/y basis.")
 
             article_state_label = params["source"]["article_state_label"]
+            angle_1 = params["source"]["state_angles"]["channel_1"]
+            angle_2 = params["source"]["state_angles"]["channel_2"]
+            angle_3 = params["source"]["state_angles"]["channel_3"]
+            angle_4 = params["source"]["state_angles"]["channel_4"]
 
             if mode == "article_state":
                 article_state_label = st.selectbox(
@@ -2055,6 +2077,8 @@ with right_col:
                     params["source"]["state_angles"]["channel_2"] = angle_2
                     params["source"]["state_angles"]["channel_3"] = angle_3
                     params["source"]["state_angles"]["channel_4"] = angle_4
+
+                st.success("Source settings applied.")
 
     elif selected.startswith("channel"):
         st.markdown(f"### {selected}")
