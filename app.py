@@ -2199,6 +2199,327 @@ with right_col:
             if submitted:
                 params["beam_splitters"][selected]["loss"] = loss
 
+
+# ============================================================
+# Direct controls: reliable settings without clicking tiny zones
+# ============================================================
+
+with st.expander("Direct configuration panels (use this if image clicking is inconvenient)", expanded=True):
+    st.caption(
+        "These controls duplicate the scheme settings, but do not depend on clicking the image. "
+        "Use them for channels 2/3 and for quick test presets."
+    )
+
+    preset_tab, source_tab, channels_tab, detectors_tab, pr_tab, bs_tab, timing_tab = st.tabs([
+        "Presets",
+        "Source",
+        "Channels",
+        "Detectors",
+        "PR",
+        "Beam splitters",
+        "Timing",
+    ])
+
+    with preset_tab:
+        st.markdown("### Fast test presets")
+
+        preset_col1, preset_col2 = st.columns(2)
+
+        with preset_col1:
+            if st.button("Apply ideal article-state channel", key="preset_ideal_channel"):
+                params["source"]["mode"] = "article_state"
+                params["source"]["selected_state_label"] = params["source"].get("article_state_label", "psi1")
+                params["source"]["pair_generation_efficiency"] = 1.0
+                params["simulation"]["detection_mode"] = "fourfold"
+
+                for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
+                    params["channels"][channel_name]["loss"] = 0.0
+                    params["channels"][channel_name]["eve"] = False
+                    params["channels"][channel_name]["eve_disturbance"] = 0.0
+                    params["channels"][channel_name]["eve_delay"] = 0.0
+                    params["channels"][channel_name]["length"] = 10.0
+
+                for detector_name in ["detector_1", "detector_2", "detector_3", "detector_4"]:
+                    params["detectors"][detector_name]["eta"] = 1.0
+                    params["detectors"][detector_name]["dark"] = 0.0
+
+                for pr_name in ["pr_1", "pr_2", "pr_3", "pr_4"]:
+                    params["pr"][pr_name]["angle"] = 0.0
+                    params["pr"][pr_name]["error"] = 0.0
+
+                params["beam_splitters"]["bs_left"]["loss"] = 0.0
+                params["beam_splitters"]["bs_right"]["loss"] = 0.0
+
+                params["timing"]["speed"] = 2e8
+                params["timing"]["coincidence_window"] = 2e-9
+                params["timing"]["detector_jitter"] = 0.2e-9
+
+                st.success("Ideal article-state channel preset applied.")
+
+        with preset_col2:
+            if st.button("Apply realistic baseline without Eve", key="preset_realistic_no_eve"):
+                params["source"]["mode"] = "article_state"
+                params["source"]["selected_state_label"] = params["source"].get("article_state_label", "psi1")
+                params["source"]["pair_generation_efficiency"] = 0.95
+                params["simulation"]["detection_mode"] = "fourfold"
+
+                for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
+                    params["channels"][channel_name]["loss"] = 0.05
+                    params["channels"][channel_name]["eve"] = False
+                    params["channels"][channel_name]["eve_disturbance"] = 0.15
+                    params["channels"][channel_name]["eve_delay"] = 0.0
+                    params["channels"][channel_name]["length"] = 10.0
+
+                for detector_name in ["detector_1", "detector_2", "detector_3", "detector_4"]:
+                    params["detectors"][detector_name]["eta"] = 0.85
+                    params["detectors"][detector_name]["dark"] = 0.0
+
+                for pr_name in ["pr_1", "pr_2", "pr_3", "pr_4"]:
+                    params["pr"][pr_name]["angle"] = 0.0
+                    params["pr"][pr_name]["error"] = 0.0
+
+                params["beam_splitters"]["bs_left"]["loss"] = 0.02
+                params["beam_splitters"]["bs_right"]["loss"] = 0.02
+
+                params["timing"]["speed"] = 2e8
+                params["timing"]["coincidence_window"] = 2e-9
+                params["timing"]["detector_jitter"] = 0.2e-9
+
+                st.success("Realistic no-Eve baseline preset applied.")
+
+        st.markdown("### Current quick summary")
+        st.write("Source mode:", params["source"].get("mode"))
+        st.write("Selected state:", params["source"].get("selected_state_label"))
+        st.write("Detection mode:", params["simulation"].get("detection_mode"))
+
+    with source_tab:
+        st.markdown("### Source settings without image click")
+
+        source_mode_direct = st.radio(
+            "Source mode",
+            ["manual", "article_state"],
+            index=0 if params["source"].get("mode", "manual") == "manual" else 1,
+            key="direct_source_mode",
+            horizontal=True,
+        )
+
+        with st.form("direct_source_form"):
+            source_message_direct = st.text_input(
+                "Message Alice sends",
+                value=params["source"]["message"],
+                key="direct_source_message",
+            )
+
+            source_packets_direct = st.number_input(
+                "Number of photon packets",
+                min_value=1,
+                max_value=100000,
+                value=int(params["source"]["num_packets"]),
+                step=100,
+                key="direct_source_packets",
+            )
+
+            source_pair_eff_direct = st.number_input(
+                "Pair generation efficiency",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(params["source"]["pair_generation_efficiency"]),
+                step=0.01,
+                key="direct_source_pair_eff",
+            )
+
+            detection_mode_direct = st.selectbox(
+                "Detection mode",
+                ["fourfold", "any_click"],
+                index=0 if params["simulation"].get("detection_mode", "fourfold") == "fourfold" else 1,
+                key="direct_detection_mode",
+            )
+
+            article_state_direct = params["source"].get("article_state_label", "psi1")
+            manual_angles_direct = params["source"]["state_angles"].copy()
+
+            if source_mode_direct == "article_state":
+                article_state_direct = st.selectbox(
+                    "Article state",
+                    ["psi1", "psi2", "psi3", "psi4"],
+                    index=["psi1", "psi2", "psi3", "psi4"].index(params["source"].get("article_state_label", "psi1")),
+                    key="direct_article_state",
+                )
+                st.write(ARTICLE_STATES[article_state_direct])
+            else:
+                st.markdown("#### Manual polarization angles")
+                angle_cols = st.columns(4)
+                for idx, channel_name in enumerate(["channel_1", "channel_2", "channel_3", "channel_4"]):
+                    with angle_cols[idx]:
+                        manual_angles_direct[channel_name] = st.number_input(
+                            f"{channel_name} angle",
+                            min_value=-180.0,
+                            max_value=180.0,
+                            value=float(params["source"]["state_angles"][channel_name]),
+                            step=1.0,
+                            key=f"direct_{channel_name}_source_angle",
+                        )
+
+            source_direct_submitted = st.form_submit_button("Apply direct source settings")
+
+            if source_direct_submitted:
+                params["source"]["message"] = source_message_direct
+                params["source"]["num_packets"] = int(source_packets_direct)
+                params["source"]["pair_generation_efficiency"] = float(source_pair_eff_direct)
+                params["source"]["mode"] = source_mode_direct
+                params["simulation"]["detection_mode"] = detection_mode_direct
+
+                if source_mode_direct == "article_state":
+                    params["source"]["article_state_label"] = article_state_direct
+                    params["source"]["selected_state_label"] = article_state_direct
+                else:
+                    params["source"]["selected_state_label"] = "manual"
+                    params["source"]["state_angles"].update(manual_angles_direct)
+
+                st.success("Direct source settings applied.")
+
+    with channels_tab:
+        st.markdown("### Channel settings without image click")
+
+        st.markdown("#### Apply same values to all channels")
+        with st.form("all_channels_form"):
+            all_loss = st.number_input("All channels loss", min_value=0.0, max_value=1.0, value=0.0, step=0.01, key="all_channels_loss")
+            all_length = st.number_input("All channels length (m)", min_value=0.1, max_value=100000.0, value=10.0, step=0.1, key="all_channels_length")
+            all_eve = st.checkbox("Eve on all channels", value=False, key="all_channels_eve")
+            all_eve_disturbance = st.number_input("All channels Eve disturbance", min_value=0.0, max_value=1.0, value=0.0, step=0.01, key="all_channels_eve_disturbance")
+            all_eve_delay_ns = st.number_input("All channels Eve delay (ns)", min_value=0.0, max_value=1000.0, value=0.0, step=0.1, key="all_channels_eve_delay")
+            apply_all_channels = st.form_submit_button("Apply to all channels")
+
+            if apply_all_channels:
+                for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
+                    params["channels"][channel_name]["loss"] = float(all_loss)
+                    params["channels"][channel_name]["length"] = float(all_length)
+                    params["channels"][channel_name]["eve"] = bool(all_eve)
+                    params["channels"][channel_name]["eve_disturbance"] = float(all_eve_disturbance)
+                    params["channels"][channel_name]["eve_delay"] = float(all_eve_delay_ns) * 1e-9
+                st.success("Applied values to all channels.")
+
+        st.markdown("#### Configure one channel")
+        direct_channel_name = st.selectbox(
+            "Channel",
+            ["channel_1", "channel_2", "channel_3", "channel_4"],
+            key="direct_channel_select",
+        )
+
+        with st.form("direct_single_channel_form"):
+            channel_data = params["channels"][direct_channel_name]
+            direct_channel_eve = st.checkbox("Eve taps this channel", value=bool(channel_data["eve"]), key="direct_channel_eve")
+            direct_channel_loss = st.number_input("Channel loss", min_value=0.0, max_value=1.0, value=float(channel_data["loss"]), step=0.01, key="direct_channel_loss")
+            direct_channel_eve_disturbance = st.number_input("Eve disturbance probability", min_value=0.0, max_value=1.0, value=float(channel_data["eve_disturbance"]), step=0.01, key="direct_channel_eve_disturbance")
+            direct_channel_eve_delay_ns = st.number_input("Eve delay (ns)", min_value=0.0, max_value=1000.0, value=float(channel_data.get("eve_delay", 0.0) * 1e9), step=0.1, key="direct_channel_eve_delay")
+            direct_channel_length = st.number_input("Channel length (m)", min_value=0.1, max_value=100000.0, value=float(channel_data["length"]), step=0.1, key="direct_channel_length")
+            direct_channel_submitted = st.form_submit_button("Apply selected channel settings")
+
+            if direct_channel_submitted:
+                params["channels"][direct_channel_name]["eve"] = bool(direct_channel_eve)
+                params["channels"][direct_channel_name]["loss"] = float(direct_channel_loss)
+                params["channels"][direct_channel_name]["eve_disturbance"] = float(direct_channel_eve_disturbance)
+                params["channels"][direct_channel_name]["eve_delay"] = float(direct_channel_eve_delay_ns) * 1e-9
+                params["channels"][direct_channel_name]["length"] = float(direct_channel_length)
+                st.success(f"{direct_channel_name} settings applied.")
+
+        channel_overview = pd.DataFrame(params["channels"]).T.reset_index().rename(columns={"index": "channel"})
+        channel_overview["eve_delay_ns"] = channel_overview["eve_delay"] * 1e9
+        st.dataframe(channel_overview[["channel", "loss", "length", "eve", "eve_disturbance", "eve_delay_ns"]], use_container_width=True)
+
+    with detectors_tab:
+        st.markdown("### Detector settings without image click")
+
+        with st.form("all_detectors_form"):
+            all_eta = st.number_input("All detectors eta", min_value=0.0, max_value=1.0, value=1.0, step=0.01, key="all_detectors_eta")
+            all_dark = st.number_input("All detectors dark count probability", min_value=0.0, max_value=0.2, value=0.0, step=0.001, key="all_detectors_dark")
+            apply_all_detectors = st.form_submit_button("Apply to all detectors")
+
+            if apply_all_detectors:
+                for detector_name in ["detector_1", "detector_2", "detector_3", "detector_4"]:
+                    params["detectors"][detector_name]["eta"] = float(all_eta)
+                    params["detectors"][detector_name]["dark"] = float(all_dark)
+                st.success("Applied values to all detectors.")
+
+        direct_detector_name = st.selectbox("Detector", ["detector_1", "detector_2", "detector_3", "detector_4"], key="direct_detector_select")
+        with st.form("direct_single_detector_form"):
+            detector_data = params["detectors"][direct_detector_name]
+            direct_eta = st.number_input("Detector efficiency η", min_value=0.0, max_value=1.0, value=float(detector_data["eta"]), step=0.01, key="direct_detector_eta")
+            direct_dark = st.number_input("Dark count probability", min_value=0.0, max_value=0.2, value=float(detector_data["dark"]), step=0.001, key="direct_detector_dark")
+            direct_detector_submitted = st.form_submit_button("Apply selected detector settings")
+
+            if direct_detector_submitted:
+                params["detectors"][direct_detector_name]["eta"] = float(direct_eta)
+                params["detectors"][direct_detector_name]["dark"] = float(direct_dark)
+                st.success(f"{direct_detector_name} settings applied.")
+
+        st.dataframe(pd.DataFrame(params["detectors"]).T.reset_index().rename(columns={"index": "detector"}), use_container_width=True)
+
+    with pr_tab:
+        st.markdown("### PR settings without image click")
+
+        with st.form("all_pr_form"):
+            all_pr_angle = st.number_input("All PR angle (deg)", min_value=-180.0, max_value=180.0, value=0.0, step=1.0, key="all_pr_angle")
+            all_pr_error = st.number_input("All PR error", min_value=0.0, max_value=0.2, value=0.0, step=0.01, key="all_pr_error")
+            apply_all_pr = st.form_submit_button("Apply to all PR elements")
+
+            if apply_all_pr:
+                for pr_name in ["pr_1", "pr_2", "pr_3", "pr_4"]:
+                    params["pr"][pr_name]["angle"] = float(all_pr_angle)
+                    params["pr"][pr_name]["error"] = float(all_pr_error)
+                st.success("Applied values to all PR elements.")
+
+        direct_pr_name = st.selectbox("PR element", ["pr_1", "pr_2", "pr_3", "pr_4"], key="direct_pr_select")
+        with st.form("direct_single_pr_form"):
+            pr_data = params["pr"][direct_pr_name]
+            direct_pr_angle = st.number_input("Polarization rotation angle", min_value=-180.0, max_value=180.0, value=float(pr_data["angle"]), step=1.0, key="direct_pr_angle")
+            direct_pr_error = st.number_input("Rotation error", min_value=0.0, max_value=0.2, value=float(pr_data["error"]), step=0.01, key="direct_pr_error")
+            direct_pr_submitted = st.form_submit_button("Apply selected PR settings")
+
+            if direct_pr_submitted:
+                params["pr"][direct_pr_name]["angle"] = float(direct_pr_angle)
+                params["pr"][direct_pr_name]["error"] = float(direct_pr_error)
+                st.success(f"{direct_pr_name} settings applied.")
+
+        st.dataframe(pd.DataFrame(params["pr"]).T.reset_index().rename(columns={"index": "pr"}), use_container_width=True)
+
+    with bs_tab:
+        st.markdown("### Beam splitter settings without image click")
+
+        with st.form("direct_bs_form"):
+            bs_left_loss = st.number_input("BS left loss", min_value=0.0, max_value=1.0, value=float(params["beam_splitters"]["bs_left"]["loss"]), step=0.01, key="direct_bs_left_loss")
+            bs_right_loss = st.number_input("BS right loss", min_value=0.0, max_value=1.0, value=float(params["beam_splitters"]["bs_right"]["loss"]), step=0.01, key="direct_bs_right_loss")
+            bs_submitted = st.form_submit_button("Apply beam splitter settings")
+
+            if bs_submitted:
+                params["beam_splitters"]["bs_left"]["loss"] = float(bs_left_loss)
+                params["beam_splitters"]["bs_right"]["loss"] = float(bs_right_loss)
+                st.success("Beam splitter settings applied.")
+
+        st.dataframe(pd.DataFrame(params["beam_splitters"]).T.reset_index().rename(columns={"index": "beam_splitter"}), use_container_width=True)
+
+    with timing_tab:
+        st.markdown("### Timing settings without image click")
+
+        with st.form("direct_timing_form"):
+            direct_speed = st.number_input("Propagation speed (m/s)", min_value=1e6, max_value=3e8, value=float(params["timing"]["speed"]), step=1e6, format="%.3e", key="direct_timing_speed")
+            direct_window_ns = st.number_input("Coincidence window (ns)", min_value=0.001, max_value=1000.0, value=float(params["timing"]["coincidence_window"] * 1e9), step=0.1, key="direct_timing_window")
+            direct_jitter_ns = st.number_input("Detector jitter (ns)", min_value=0.0, max_value=1000.0, value=float(params["timing"]["detector_jitter"] * 1e9), step=0.1, key="direct_timing_jitter")
+            timing_submitted = st.form_submit_button("Apply timing settings")
+
+            if timing_submitted:
+                params["timing"]["speed"] = float(direct_speed)
+                params["timing"]["coincidence_window"] = float(direct_window_ns) * 1e-9
+                params["timing"]["detector_jitter"] = float(direct_jitter_ns) * 1e-9
+                st.success("Timing settings applied.")
+
+        st.json({
+            "speed_m_per_s": params["timing"]["speed"],
+            "coincidence_window_ns": params["timing"]["coincidence_window"] * 1e9,
+            "detector_jitter_ns": params["timing"]["detector_jitter"] * 1e9,
+        })
+
+
 st.divider()
 
 # ============================================================
