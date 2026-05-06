@@ -843,6 +843,69 @@ def infer_rejection_reason(channel_report: list[dict], base_reason: str | None, 
     return None
 
 
+def classify_packet_event(
+    *,
+    postselection_passed: bool,
+    fourfold_detected: bool,
+    coincidence_passed: bool,
+    detected_channels: tuple,
+    channel_report: list[dict],
+) -> dict:
+    """
+    Separate real losses from postselection rejection.
+
+    Polarization pattern can be fully measured, but the event may still be rejected
+    by the coincidence/time window. This should not be shown as 'lost'.
+    """
+
+    if postselection_passed:
+        return {
+            "packet_status": "accepted",
+            "packet_status_label": "accepted",
+            "display_decoded_state": "accepted",
+            "is_physically_lost": False,
+            "is_rejected_by_postselection": False,
+        }
+
+    has_any_detection = any(detected_channels)
+    has_channel_loss = any(row["lost_in_channel"] for row in channel_report)
+    has_detector_miss = any(row["detector_miss"] for row in channel_report)
+
+    if not fourfold_detected:
+        if has_channel_loss:
+            status = "lost_channel"
+            label = "lost in channel"
+            is_physically_lost = True
+        elif has_detector_miss:
+            status = "detector_miss"
+            label = "detector miss"
+            is_physically_lost = True
+        elif not has_any_detection:
+            status = "no_detection"
+            label = "no detection"
+            is_physically_lost = True
+        else:
+            status = "rejected_not_fourfold"
+            label = "rejected: not fourfold"
+            is_physically_lost = False
+    elif not coincidence_passed:
+        status = "rejected_timing"
+        label = "rejected: timing anomaly"
+        is_physically_lost = False
+    else:
+        status = "rejected_postselection"
+        label = "rejected by postselection"
+        is_physically_lost = False
+
+    return {
+        "packet_status": status,
+        "packet_status_label": label,
+        "display_decoded_state": label,
+        "is_physically_lost": is_physically_lost,
+        "is_rejected_by_postselection": True,
+    }
+
+
 def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
     if state_label not in ARTICLE_STATE_VECTORS:
         raise ValueError(f"Unknown article state: {state_label}")
@@ -883,6 +946,13 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
         detection_status["rejection_reason"],
         coincidence_passed,
     )
+    packet_classification = classify_packet_event(
+        postselection_passed=postselection_passed,
+        fourfold_detected=fourfold_detected,
+        coincidence_passed=coincidence_passed,
+        detected_channels=detected_channels,
+        channel_report=channel_report,
+    )
 
     observed_pattern_for_decoding = observed_pattern
     if not full_pattern_available:
@@ -918,12 +988,17 @@ def simulate_single_state_transmission(state_label: str, params: dict) -> dict:
         "full_pattern_available": full_pattern_available,
         "postselection_passed": postselection_passed,
         "rejection_reason": rejection_reason,
+        "packet_status": packet_classification["packet_status"],
+        "packet_status_label": packet_classification["packet_status_label"],
+        "display_decoded_state": decoded_state or packet_classification["display_decoded_state"],
+        "is_physically_lost": packet_classification["is_physically_lost"],
+        "is_rejected_by_postselection": packet_classification["is_rejected_by_postselection"],
         "channel_report": channel_report,
         "decoded_state": decoded_state,
         "decoded_bits": decoded_bits,
         "decoding_confidence": decoding_confidence,
         "is_correct": is_correct,
-        "was_lost": not postselection_passed,
+        "was_lost": packet_classification["is_physically_lost"],
     }
 
 
@@ -1027,6 +1102,11 @@ def build_single_packet_debug_report(state_label: str, params: dict) -> dict:
         "full_pattern_available": single_result["full_pattern_available"],
         "postselection_passed": single_result["postselection_passed"],
         "rejection_reason": single_result["rejection_reason"],
+        "packet_status": single_result["packet_status"],
+        "packet_status_label": single_result["packet_status_label"],
+        "display_decoded_state": single_result["display_decoded_state"],
+        "is_physically_lost": single_result["is_physically_lost"],
+        "is_rejected_by_postselection": single_result["is_rejected_by_postselection"],
         "channel_report": single_result["channel_report"],
         "decoded_state": single_result["decoded_state"],
         "decoded_bits": single_result["decoded_bits"],
@@ -1128,14 +1208,28 @@ def summarize_rejection_stats(results: list[dict]) -> dict:
         "channel_loss_related": 0,
         "detector_miss_related": 0,
         "no_channels_detected": 0,
+        "rejected_timing": 0,
+        "lost_channel": 0,
+        "detector_miss": 0,
+        "rejected_not_fourfold": 0,
+        "rejected_postselection": 0,
+        "physically_lost": 0,
     }
 
     for result in results:
+        packet_status = result.get("packet_status", "unknown")
+
         if result["postselection_passed"]:
             stats["accepted"] += 1
             continue
 
         stats["failed_postselection"] += 1
+
+        if packet_status in stats:
+            stats[packet_status] += 1
+
+        if result.get("is_physically_lost", False):
+            stats["physically_lost"] += 1
 
         if not result["fourfold_detected"]:
             stats["not_fourfold"] += 1
@@ -2602,13 +2696,13 @@ with st.expander("Single packet debug view", expanded=False):
         metric_col1.metric("Ideal sampled pattern", format_pattern_tuple(debug_report["ideal_pattern"]))
         metric_col2.metric("Observed pattern", format_pattern_tuple(debug_report["observed_pattern"]))
         metric_col3.metric("Detected channels", format_bool_tuple(debug_report["detected_channels"]))
-        metric_col4.metric("Decoded state", debug_report["decoded_state"] or "lost")
+        metric_col4.metric("Decoded state", debug_report["decoded_state"] or "—")
 
         metric_col5, metric_col6, metric_col7, metric_col8 = st.columns(4)
         metric_col5.metric("Fourfold", "yes" if debug_report["fourfold_detected"] else "no")
         metric_col6.metric("Coincidence", "yes" if debug_report["coincidence_passed"] else "no")
         metric_col7.metric("Postselection", "yes" if debug_report["postselection_passed"] else "no")
-        metric_col8.metric("Reason", debug_report["rejection_reason"] or "accepted")
+        metric_col8.metric("Packet status", debug_report["packet_status_label"])
 
         st.markdown("#### Step 1. Effective PR angles used in this packet")
         st.json(debug_report["effective_pr_angles"])
@@ -2635,6 +2729,10 @@ with st.expander("Single packet debug view", expanded=False):
         st.markdown("#### Step 7. Packet interpretation")
         st.write("Probability of sampled ideal pattern:", f"{debug_report['ideal_probability_of_sampled_pattern']:.6f}")
         st.write("Observed pattern stayed equal to ideal pattern:", debug_report["observed_pattern_same_as_ideal"])
+        st.write("Packet status:", debug_report["packet_status_label"])
+        st.write("Rejection reason:", debug_report["rejection_reason"] or "—")
+        st.write("Physically lost:", debug_report["is_physically_lost"])
+        st.write("Rejected by postselection:", debug_report["is_rejected_by_postselection"])
         st.write("Decoded bits:", debug_report["decoded_bits"] if debug_report["decoded_bits"] is not None else "—")
         st.write("Decoding confidence:", f"{debug_report['decoding_confidence']:.6f}")
         st.write("Decoded correctly:", debug_report["is_correct"])
