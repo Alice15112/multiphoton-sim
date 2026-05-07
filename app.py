@@ -1,4 +1,5 @@
 
+import copy
 import math
 import random
 
@@ -102,6 +103,9 @@ if "last_self_test_result" not in st.session_state:
 
 if "last_physics_check_result" not in st.session_state:
     st.session_state.last_physics_check_result = None
+
+if "last_validation_result" not in st.session_state:
+    st.session_state.last_validation_result = None
 
 # ============================================================
 # Migration for older saved state
@@ -1971,6 +1975,185 @@ def run_simple_simulation(params):
     }
 
 
+
+# ============================================================
+# Validation suite helpers
+# ============================================================
+
+def make_validation_ideal_params(params: dict) -> dict:
+    validation_params = copy.deepcopy(params)
+
+    validation_params["source"]["mode"] = "article_state"
+    validation_params["source"]["selected_state_label"] = "psi1"
+    validation_params["source"]["article_state_label"] = "psi1"
+    validation_params["source"]["pair_generation_efficiency"] = 1.0
+    validation_params["simulation"]["detection_mode"] = "fourfold"
+
+    for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
+        validation_params["channels"][channel_name]["loss"] = 0.0
+        validation_params["channels"][channel_name]["eve"] = False
+        validation_params["channels"][channel_name]["eve_disturbance"] = 0.0
+        validation_params["channels"][channel_name]["eve_delay"] = 0.0
+        validation_params["channels"][channel_name]["length"] = 10.0
+
+    for detector_name in ["detector_1", "detector_2", "detector_3", "detector_4"]:
+        validation_params["detectors"][detector_name]["eta"] = 1.0
+        validation_params["detectors"][detector_name]["dark"] = 0.0
+
+    for pr_name in ["pr_1", "pr_2", "pr_3", "pr_4"]:
+        validation_params["pr"][pr_name]["angle"] = 0.0
+        validation_params["pr"][pr_name]["error"] = 0.0
+
+    validation_params["beam_splitters"]["bs_left"]["loss"] = 0.0
+    validation_params["beam_splitters"]["bs_right"]["loss"] = 0.0
+
+    validation_params["timing"]["speed"] = 2e8
+    validation_params["timing"]["coincidence_window"] = 2e-9
+    validation_params["timing"]["detector_jitter"] = 0.0
+
+    return validation_params
+
+
+def make_validation_realistic_params(params: dict) -> dict:
+    validation_params = make_validation_ideal_params(params)
+
+    for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
+        validation_params["channels"][channel_name]["loss"] = 0.05
+        validation_params["channels"][channel_name]["eve"] = False
+        validation_params["channels"][channel_name]["eve_delay"] = 0.0
+
+    for detector_name in ["detector_1", "detector_2", "detector_3", "detector_4"]:
+        validation_params["detectors"][detector_name]["eta"] = 0.85
+        validation_params["detectors"][detector_name]["dark"] = 0.0
+
+    validation_params["beam_splitters"]["bs_left"]["loss"] = 0.02
+    validation_params["beam_splitters"]["bs_right"]["loss"] = 0.02
+    validation_params["timing"]["detector_jitter"] = 0.2e-9
+
+    return validation_params
+
+
+def make_validation_eve_delay_params(params: dict) -> dict:
+    validation_params = make_validation_ideal_params(params)
+    validation_params["channels"]["channel_2"]["eve"] = True
+    validation_params["channels"]["channel_2"]["eve_delay"] = 5e-9
+    validation_params["timing"]["detector_jitter"] = 0.0
+    return validation_params
+
+
+def validation_result_row(test_name: str, passed: bool, metric: str, comment: str) -> dict:
+    return {
+        "test": test_name,
+        "result": "PASS" if passed else "FAIL",
+        "key_metric": metric,
+        "comment": comment,
+    }
+
+
+def run_validation_suite(params: dict, trials_per_state: int = 100, sequence_repeats: int = 200) -> dict:
+    rows = []
+    details = {}
+
+    # 1. Ideal channel test
+    ideal_params = make_validation_ideal_params(params)
+    ideal_result = run_ideal_self_test(trials_per_state, ideal_params)
+    ideal_summary = ideal_result["summary_df"]
+
+    ideal_accuracy_ok = bool((ideal_summary["accuracy"] == 1.0).all())
+    ideal_postselection_ok = bool((ideal_summary["postselection_passed"] == trials_per_state).all())
+    ideal_passed = ideal_accuracy_ok and ideal_postselection_ok
+
+    rows.append(validation_result_row(
+        "Ideal channel",
+        ideal_passed,
+        f"min accuracy={ideal_summary['accuracy'].min():.3f}, min postselection={int(ideal_summary['postselection_passed'].min())}/{trials_per_state}",
+        "All states should be decoded perfectly in the ideal fourfold/postselection channel.",
+    ))
+    details["ideal_self_test_summary"] = ideal_summary
+
+    # 2. psi3 0000 regression test
+    psi3_params = make_validation_ideal_params(params)
+    fixed_angles = {"pr_1": 0.0, "pr_2": 0.0, "pr_3": 0.0, "pr_4": 0.0}
+    observed_pattern, detected_channels, channel_report = apply_channel_and_detector_effects(
+        (0, 0, 0, 0),
+        psi3_params,
+    )
+    detection_status = evaluate_detection_status(detected_channels, "fourfold")
+    timing_result = simulate_arrival_times(detected_channels, psi3_params)
+    postselection_passed = (
+        detection_status["fourfold_detected"]
+        and detection_status["full_pattern_available"]
+        and timing_result["coincidence_passed"]
+    )
+    decoded_state, decoded_probability = decode_state_from_pattern_with_pr(observed_pattern, fixed_angles)
+    psi3_passed = bool(
+        observed_pattern == (0, 0, 0, 0)
+        and all(detected_channels)
+        and postselection_passed
+        and decoded_state == "psi3"
+    )
+    rows.append(validation_result_row(
+        "psi3 0000 regression",
+        psi3_passed,
+        f"observed={format_pattern_tuple(observed_pattern)}, decoded={decoded_state}, postselection={postselection_passed}",
+        "The valid xxxx polarization outcome must not be treated as no-click/lost.",
+    ))
+    details["psi3_0000"] = {
+        "observed_pattern": observed_pattern,
+        "detected_channels": detected_channels,
+        "postselection_passed": postselection_passed,
+        "decoded_state": decoded_state,
+        "decoded_probability": decoded_probability,
+    }
+
+    # 3. Realistic baseline test
+    realistic_params = make_validation_realistic_params(params)
+    state_sequence = ["psi1", "psi2", "psi3", "psi4"] * sequence_repeats
+    realistic_sequence = simulate_state_sequence(state_sequence, realistic_params)
+    realistic_stats = build_expected_vs_observed_stats(realistic_sequence, realistic_params, tolerance=0.12)
+
+    realistic_fourfold_delta = abs(realistic_stats["fourfold_delta"])
+    realistic_timing_anomaly_rate = realistic_stats["timing_anomaly_rate"]
+    realistic_passed = bool(
+        realistic_fourfold_delta <= 0.12
+        and realistic_timing_anomaly_rate <= 0.05
+        and realistic_sequence["symbol_accuracy"] >= 0.95
+    )
+    rows.append(validation_result_row(
+        "Realistic baseline without Eve",
+        realistic_passed,
+        f"expected fourfold={realistic_stats['expected_fourfold_rate']:.3f}, observed={realistic_stats['observed_fourfold_rate']:.3f}, timing anomaly={realistic_timing_anomaly_rate:.3f}",
+        "Observed fourfold rate should roughly match the no-attack estimate; timing anomalies should be rare.",
+    ))
+    details["realistic_expected_vs_observed"] = realistic_stats["summary_df"]
+    details["realistic_rejection_stats"] = realistic_sequence["rejection_stats"]
+
+    # 4. Eve delay timing test
+    eve_params = make_validation_eve_delay_params(params)
+    eve_sequence = simulate_state_sequence(state_sequence, eve_params)
+    eve_timing_anomaly_rate = eve_sequence["total_timing_anomaly"] / eve_sequence["total_sent"] if eve_sequence["total_sent"] else 0.0
+    eve_postselection_rate = eve_sequence["postselection_rate"]
+    eve_passed = bool(eve_timing_anomaly_rate >= 0.95 and eve_postselection_rate <= 0.05)
+
+    rows.append(validation_result_row(
+        "Eve delay timing rejection",
+        eve_passed,
+        f"timing anomaly={eve_timing_anomaly_rate:.3f}, postselection={eve_postselection_rate:.3f}",
+        "With 5 ns delay and a 2 ns coincidence window, packets should be rejected by timing.",
+    ))
+    details["eve_delay_rejection_stats"] = eve_sequence["rejection_stats"]
+
+    validation_df = pd.DataFrame(rows)
+    all_passed = bool((validation_df["result"] == "PASS").all())
+
+    return {
+        "all_passed": all_passed,
+        "validation_df": validation_df,
+        "details": details,
+        "trials_per_state": trials_per_state,
+        "sequence_repeats": sequence_repeats,
+    }
+
 # ============================================================
 # Display scheme
 # ============================================================
@@ -2665,6 +2848,9 @@ with control_col4:
 if st.button("Run full simulation"):
     st.session_state.last_simulation_result = build_simulation_bundle(params)
 
+if st.button("Run validation suite"):
+    st.session_state.last_validation_result = run_validation_suite(params)
+
 with st.expander("Physics model self-check", expanded=False):
     if st.session_state.last_physics_check_result is None:
         st.info("Click 'Run physics model self-check' to verify the main article-state → PR rotation → x/y-basis measurement path.")
@@ -2683,6 +2869,32 @@ with st.expander("Physics model self-check", expanded=False):
 
         st.markdown("### Decoder snapshot for the most likely pattern of each state")
         st.dataframe(physics_check["decoder_snapshot_df"], use_container_width=True)
+
+
+with st.expander("Validation suite", expanded=False):
+    if st.session_state.last_validation_result is None:
+        st.info("Click 'Run validation suite' to run the built-in regression checks: ideal channel, psi3/0000, realistic baseline, and Eve delay timing rejection.")
+    else:
+        validation_result = st.session_state.last_validation_result
+        st.metric("Overall validation", "PASS" if validation_result["all_passed"] else "FAIL")
+        st.dataframe(validation_result["validation_df"], use_container_width=True)
+
+        details = validation_result["details"]
+
+        st.markdown("### Ideal self-test summary")
+        st.dataframe(details["ideal_self_test_summary"], use_container_width=True)
+
+        st.markdown("### psi3 / 0000 regression details")
+        st.json(details["psi3_0000"])
+
+        st.markdown("### Realistic baseline expected vs observed")
+        st.dataframe(details["realistic_expected_vs_observed"], use_container_width=True)
+
+        st.markdown("### Realistic baseline rejection stats")
+        st.json(details["realistic_rejection_stats"])
+
+        st.markdown("### Eve delay rejection stats")
+        st.json(details["eve_delay_rejection_stats"])
 
 with st.expander("Single packet debug view", expanded=False):
     if st.session_state.last_debug_result is None:
