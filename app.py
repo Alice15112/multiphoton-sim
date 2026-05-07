@@ -52,10 +52,10 @@ if "scheme_params" not in st.session_state:
             },
         },
         "channels": {
-            "channel_1": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "eve_delay": 0.0, "length": 10.0},
-            "channel_2": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "eve_delay": 0.0, "length": 10.0},
-            "channel_3": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "eve_delay": 0.0, "length": 10.0},
-            "channel_4": {"loss": 0.05, "eve": False, "eve_disturbance": 0.15, "eve_delay": 0.0, "length": 10.0},
+            "channel_1": {"loss": 0.05, "eve": False, "eve_mode": "disturbance_only", "eve_disturbance": 0.15, "eve_delay": 0.0, "length": 10.0},
+            "channel_2": {"loss": 0.05, "eve": False, "eve_mode": "disturbance_only", "eve_disturbance": 0.15, "eve_delay": 0.0, "length": 10.0},
+            "channel_3": {"loss": 0.05, "eve": False, "eve_mode": "disturbance_only", "eve_disturbance": 0.15, "eve_delay": 0.0, "length": 10.0},
+            "channel_4": {"loss": 0.05, "eve": False, "eve_mode": "disturbance_only", "eve_disturbance": 0.15, "eve_delay": 0.0, "length": 10.0},
         },
         "pr": {
             "pr_1": {"angle": 0.0, "error": 0.0},
@@ -155,6 +155,9 @@ for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
         params["channels"][channel_name]["length"] = 10.0
     if "eve_delay" not in params["channels"][channel_name]:
         params["channels"][channel_name]["eve_delay"] = 0.0
+
+    if "eve_mode" not in params["channels"][channel_name]:
+        params["channels"][channel_name]["eve_mode"] = "disturbance_only"
 
 left_col, right_col = st.columns([2, 1])
 
@@ -688,7 +691,13 @@ def apply_channel_and_detector_effects(
     params: dict,
 ):
     """
-    Apply channel loss, detector efficiency, dark counts, and Eve disturbance.
+    Apply channel loss, detector efficiency, dark counts, and Eve effects.
+
+    Eve modes:
+        - passive_monitor: Eve observes/logs the polarization but does not change it.
+        - disturbance_only: Eve causes a simple polarization flip with probability eve_disturbance.
+        - intercept_resend: simplified intercept-resend; Eve measures in the x/y basis and resends.
+          The resend can be wrong with probability eve_disturbance.
 
     Returns:
         observed_pattern: tuple of 0/1 or None (polarization outcomes)
@@ -704,9 +713,11 @@ def apply_channel_and_detector_effects(
     for idx, channel_name in enumerate(channel_names):
         ideal_pol = ideal_pattern[idx]
 
-        loss_prob = params["channels"][channel_name]["loss"]
-        eve_flag = params["channels"][channel_name]["eve"]
-        eve_disturbance = params["channels"][channel_name]["eve_disturbance"]
+        channel = params["channels"][channel_name]
+        loss_prob = channel["loss"]
+        eve_flag = channel["eve"]
+        eve_mode = channel.get("eve_mode", "disturbance_only")
+        eve_disturbance = channel.get("eve_disturbance", 0.0)
 
         detector_name = f"detector_{idx + 1}"
         eta = params["detectors"][detector_name]["eta"]
@@ -719,12 +730,43 @@ def apply_channel_and_detector_effects(
 
         lost_in_channel = random.random() < loss_prob
 
+        eve_observed_polarization = None
+        eve_resend_polarization = None
         eve_disturbed = False
+        eve_action = "none"
         pol_after_eve = ideal_pol
+
         if eve_flag and not lost_in_channel:
-            if random.random() < eve_disturbance:
-                pol_after_eve = 1 - ideal_pol
-                eve_disturbed = True
+            # In this simplified model Eve sees the x/y outcome represented by ideal_pol.
+            eve_observed_polarization = ideal_pol
+
+            if eve_mode == "passive_monitor":
+                # Eve only observes/logs. No change to polarization.
+                eve_action = "passive monitor"
+                pol_after_eve = ideal_pol
+                eve_resend_polarization = ideal_pol
+
+            elif eve_mode == "disturbance_only":
+                # Old simple model: Eve randomly flips the polarization.
+                eve_action = "disturbance only"
+                if random.random() < eve_disturbance:
+                    pol_after_eve = 1 - ideal_pol
+                    eve_disturbed = True
+                eve_resend_polarization = pol_after_eve
+
+            elif eve_mode == "intercept_resend":
+                # Simplified intercept-resend: Eve measures and prepares a new signal.
+                # eve_disturbance is interpreted as resend/preparation error probability.
+                eve_action = "intercept-resend"
+                resend_pol = eve_observed_polarization
+                if random.random() < eve_disturbance:
+                    resend_pol = 1 - eve_observed_polarization
+                    eve_disturbed = True
+                pol_after_eve = resend_pol
+                eve_resend_polarization = resend_pol
+
+            else:
+                raise ValueError(f"Unknown Eve mode for {channel_name}: {eve_mode}")
 
         detected = False
         dark_used = False
@@ -754,12 +796,16 @@ def apply_channel_and_detector_effects(
             "detected": bool(detected),
             "detector_miss": detector_miss,
             "dark_count_used": dark_used,
+            "eve_enabled": bool(eve_flag),
+            "eve_mode": eve_mode if eve_flag else "off",
+            "eve_action": eve_action,
+            "eve_observed_polarization": eve_observed_polarization,
+            "eve_resend_polarization": eve_resend_polarization,
             "eve_disturbed": eve_disturbed,
-            "channel_length_m": params["channels"][channel_name]["length"],
+            "channel_length_m": channel["length"],
         })
 
     return tuple(observed_pattern), tuple(detected_channels), channel_report
-
 
 def evaluate_detection_status(detected_channels: tuple, mode: str = "fourfold") -> dict:
     any_detected = any(detected_channels)
@@ -1507,6 +1553,7 @@ def clone_params_without_eve(params):
         cloned["channels"][ch_name] = {
             "loss": ch_data["loss"],
             "eve": False,
+            "eve_mode": ch_data.get("eve_mode", "disturbance_only"),
             "eve_disturbance": ch_data["eve_disturbance"],
             "eve_delay": ch_data.get("eve_delay", 0.0),
             "length": ch_data.get("length", 10.0),
@@ -1547,6 +1594,7 @@ def clone_ideal_params(params: dict) -> dict:
         cloned["channels"][channel_name] = {
             "loss": 0.0,
             "eve": False,
+            "eve_mode": "disturbance_only",
             "eve_disturbance": 0.0,
             "eve_delay": 0.0,
             "length": params["channels"][channel_name].get("length", 10.0),
@@ -1995,6 +2043,7 @@ def make_validation_ideal_params(params: dict) -> dict:
     for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
         validation_params["channels"][channel_name]["loss"] = 0.0
         validation_params["channels"][channel_name]["eve"] = False
+        validation_params["channels"][channel_name]["eve_mode"] = "disturbance_only"
         validation_params["channels"][channel_name]["eve_disturbance"] = 0.0
         validation_params["channels"][channel_name]["eve_delay"] = 0.0
         validation_params["channels"][channel_name]["length"] = 10.0
@@ -2023,6 +2072,7 @@ def make_validation_realistic_params(params: dict) -> dict:
     for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
         validation_params["channels"][channel_name]["loss"] = 0.05
         validation_params["channels"][channel_name]["eve"] = False
+        validation_params["channels"][channel_name]["eve_mode"] = "disturbance_only"
         validation_params["channels"][channel_name]["eve_delay"] = 0.0
 
     for detector_name in ["detector_1", "detector_2", "detector_3", "detector_4"]:
@@ -2039,6 +2089,7 @@ def make_validation_realistic_params(params: dict) -> dict:
 def make_validation_eve_delay_params(params: dict) -> dict:
     validation_params = make_validation_ideal_params(params)
     validation_params["channels"]["channel_2"]["eve"] = True
+    validation_params["channels"]["channel_2"]["eve_mode"] = "passive_monitor"
     validation_params["channels"]["channel_2"]["eve_delay"] = 5e-9
     validation_params["timing"]["detector_jitter"] = 0.0
     return validation_params
@@ -2187,6 +2238,7 @@ def set_all_channel_loss(params: dict, loss_value: float) -> None:
 def reset_all_eve(params: dict) -> None:
     for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
         params["channels"][channel_name]["eve"] = False
+        params["channels"][channel_name]["eve_mode"] = "disturbance_only"
         params["channels"][channel_name]["eve_delay"] = 0.0
         params["channels"][channel_name]["eve_disturbance"] = 0.0
 
@@ -2237,6 +2289,7 @@ def run_single_sweep(params: dict, parameter_name: str, values: list[float], tri
             sweep_params["beam_splitters"]["bs_left"]["loss"] = 0.0
             sweep_params["beam_splitters"]["bs_right"]["loss"] = 0.0
             sweep_params["channels"]["channel_2"]["eve"] = True
+            sweep_params["channels"]["channel_2"]["eve_mode"] = "passive_monitor"
             sweep_params["channels"]["channel_2"]["eve_delay"] = float(value) * 1e-9
             sweep_params["channels"]["channel_2"]["eve_disturbance"] = 0.0
             sweep_params["timing"]["coincidence_window"] = 2e-9
@@ -2249,6 +2302,7 @@ def run_single_sweep(params: dict, parameter_name: str, values: list[float], tri
             sweep_params["beam_splitters"]["bs_left"]["loss"] = 0.0
             sweep_params["beam_splitters"]["bs_right"]["loss"] = 0.0
             sweep_params["channels"]["channel_2"]["eve"] = True
+            sweep_params["channels"]["channel_2"]["eve_mode"] = "disturbance_only"
             sweep_params["channels"]["channel_2"]["eve_delay"] = 0.0
             sweep_params["channels"]["channel_2"]["eve_disturbance"] = float(value)
             sweep_params["timing"]["detector_jitter"] = 0.0
@@ -2489,6 +2543,14 @@ with right_col:
                 value=params["channels"][selected]["eve"],
             )
 
+            eve_mode = st.selectbox(
+                "Eve mode",
+                ["passive_monitor", "disturbance_only", "intercept_resend"],
+                index=["passive_monitor", "disturbance_only", "intercept_resend"].index(
+                    params["channels"][selected].get("eve_mode", "disturbance_only")
+                ),
+            )
+
             loss = st.slider(
                 "Channel loss",
                 0.0,
@@ -2525,6 +2587,7 @@ with right_col:
 
             if submitted:
                 params["channels"][selected]["eve"] = eve
+                params["channels"][selected]["eve_mode"] = eve_mode
                 params["channels"][selected]["loss"] = loss
                 params["channels"][selected]["eve_disturbance"] = eve_disturbance
                 params["channels"][selected]["eve_delay"] = eve_delay_ns * 1e-9
@@ -2635,6 +2698,7 @@ with st.expander("Direct configuration panels (use this if image clicking is inc
                 for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
                     params["channels"][channel_name]["loss"] = 0.0
                     params["channels"][channel_name]["eve"] = False
+                    params["channels"][channel_name]["eve_mode"] = "disturbance_only"
                     params["channels"][channel_name]["eve_disturbance"] = 0.0
                     params["channels"][channel_name]["eve_delay"] = 0.0
                     params["channels"][channel_name]["length"] = 10.0
@@ -2666,6 +2730,7 @@ with st.expander("Direct configuration panels (use this if image clicking is inc
                 for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
                     params["channels"][channel_name]["loss"] = 0.05
                     params["channels"][channel_name]["eve"] = False
+                    params["channels"][channel_name]["eve_mode"] = "disturbance_only"
                     params["channels"][channel_name]["eve_disturbance"] = 0.15
                     params["channels"][channel_name]["eve_delay"] = 0.0
                     params["channels"][channel_name]["length"] = 10.0
@@ -2786,6 +2851,7 @@ with st.expander("Direct configuration panels (use this if image clicking is inc
             all_loss = st.number_input("All channels loss", min_value=0.0, max_value=1.0, value=0.0, step=0.01, key="all_channels_loss")
             all_length = st.number_input("All channels length (m)", min_value=0.1, max_value=100000.0, value=10.0, step=0.1, key="all_channels_length")
             all_eve = st.checkbox("Eve on all channels", value=False, key="all_channels_eve")
+            all_eve_mode = st.selectbox("All channels Eve mode", ["passive_monitor", "disturbance_only", "intercept_resend"], index=1, key="all_channels_eve_mode")
             all_eve_disturbance = st.number_input("All channels Eve disturbance", min_value=0.0, max_value=1.0, value=0.0, step=0.01, key="all_channels_eve_disturbance")
             all_eve_delay_ns = st.number_input("All channels Eve delay (ns)", min_value=0.0, max_value=1000.0, value=0.0, step=0.1, key="all_channels_eve_delay")
             apply_all_channels = st.form_submit_button("Apply to all channels")
@@ -2795,6 +2861,7 @@ with st.expander("Direct configuration panels (use this if image clicking is inc
                     params["channels"][channel_name]["loss"] = float(all_loss)
                     params["channels"][channel_name]["length"] = float(all_length)
                     params["channels"][channel_name]["eve"] = bool(all_eve)
+                    params["channels"][channel_name]["eve_mode"] = all_eve_mode
                     params["channels"][channel_name]["eve_disturbance"] = float(all_eve_disturbance)
                     params["channels"][channel_name]["eve_delay"] = float(all_eve_delay_ns) * 1e-9
                 st.success("Applied values to all channels.")
@@ -2809,6 +2876,12 @@ with st.expander("Direct configuration panels (use this if image clicking is inc
         with st.form("direct_single_channel_form"):
             channel_data = params["channels"][direct_channel_name]
             direct_channel_eve = st.checkbox("Eve taps this channel", value=bool(channel_data["eve"]), key="direct_channel_eve")
+            direct_channel_eve_mode = st.selectbox(
+                "Eve mode",
+                ["passive_monitor", "disturbance_only", "intercept_resend"],
+                index=["passive_monitor", "disturbance_only", "intercept_resend"].index(channel_data.get("eve_mode", "disturbance_only")),
+                key="direct_channel_eve_mode",
+            )
             direct_channel_loss = st.number_input("Channel loss", min_value=0.0, max_value=1.0, value=float(channel_data["loss"]), step=0.01, key="direct_channel_loss")
             direct_channel_eve_disturbance = st.number_input("Eve disturbance probability", min_value=0.0, max_value=1.0, value=float(channel_data["eve_disturbance"]), step=0.01, key="direct_channel_eve_disturbance")
             direct_channel_eve_delay_ns = st.number_input("Eve delay (ns)", min_value=0.0, max_value=1000.0, value=float(channel_data.get("eve_delay", 0.0) * 1e9), step=0.1, key="direct_channel_eve_delay")
@@ -2817,6 +2890,7 @@ with st.expander("Direct configuration panels (use this if image clicking is inc
 
             if direct_channel_submitted:
                 params["channels"][direct_channel_name]["eve"] = bool(direct_channel_eve)
+                params["channels"][direct_channel_name]["eve_mode"] = direct_channel_eve_mode
                 params["channels"][direct_channel_name]["loss"] = float(direct_channel_loss)
                 params["channels"][direct_channel_name]["eve_disturbance"] = float(direct_channel_eve_disturbance)
                 params["channels"][direct_channel_name]["eve_delay"] = float(direct_channel_eve_delay_ns) * 1e-9
@@ -2825,7 +2899,7 @@ with st.expander("Direct configuration panels (use this if image clicking is inc
 
         channel_overview = pd.DataFrame(params["channels"]).T.reset_index().rename(columns={"index": "channel"})
         channel_overview["eve_delay_ns"] = channel_overview["eve_delay"] * 1e9
-        st.dataframe(channel_overview[["channel", "loss", "length", "eve", "eve_disturbance", "eve_delay_ns"]], use_container_width=True)
+        st.dataframe(channel_overview[["channel", "loss", "length", "eve", "eve_mode", "eve_disturbance", "eve_delay_ns"]], use_container_width=True)
 
     with detectors_tab:
         st.markdown("### Detector settings without image click")
