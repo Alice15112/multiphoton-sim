@@ -107,6 +107,9 @@ if "last_physics_check_result" not in st.session_state:
 if "last_validation_result" not in st.session_state:
     st.session_state.last_validation_result = None
 
+if "last_sweep_result" not in st.session_state:
+    st.session_state.last_sweep_result = None
+
 # ============================================================
 # Migration for older saved state
 # ============================================================
@@ -2154,6 +2157,126 @@ def run_validation_suite(params: dict, trials_per_state: int = 100, sequence_rep
         "sequence_repeats": sequence_repeats,
     }
 
+
+# ============================================================
+# Parameter sweep helpers
+# ============================================================
+
+def make_sweep_base_params(params: dict) -> dict:
+    """Stable baseline for sweep experiments: article state, fourfold, no Eve by default."""
+    sweep_params = make_validation_realistic_params(params)
+    sweep_params["source"]["mode"] = "article_state"
+    sweep_params["source"]["selected_state_label"] = "psi1"
+    sweep_params["source"]["article_state_label"] = "psi1"
+    sweep_params["source"]["pair_generation_efficiency"] = 1.0
+    sweep_params["simulation"]["detection_mode"] = "fourfold"
+    sweep_params["timing"]["detector_jitter"] = 0.0
+    return sweep_params
+
+
+def set_all_detector_eta(params: dict, eta_value: float) -> None:
+    for detector_name in ["detector_1", "detector_2", "detector_3", "detector_4"]:
+        params["detectors"][detector_name]["eta"] = float(eta_value)
+
+
+def set_all_channel_loss(params: dict, loss_value: float) -> None:
+    for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
+        params["channels"][channel_name]["loss"] = float(loss_value)
+
+
+def reset_all_eve(params: dict) -> None:
+    for channel_name in ["channel_1", "channel_2", "channel_3", "channel_4"]:
+        params["channels"][channel_name]["eve"] = False
+        params["channels"][channel_name]["eve_delay"] = 0.0
+        params["channels"][channel_name]["eve_disturbance"] = 0.0
+
+
+def summarize_sequence_for_sweep(sequence_result: dict, params: dict, parameter_name: str, parameter_value: float) -> dict:
+    expected_stats = build_expected_vs_observed_stats(sequence_result, params, tolerance=0.12)
+    symbol_error_rate = 1.0 - sequence_result["symbol_accuracy"] if sequence_result["total_postselected"] else 0.0
+
+    return {
+        "parameter": parameter_value,
+        "parameter_name": parameter_name,
+        "expected_fourfold_rate": expected_stats["expected_fourfold_rate"],
+        "observed_fourfold_rate": sequence_result["fourfold_rate"],
+        "observed_postselection_rate": sequence_result["postselection_rate"],
+        "timing_anomaly_rate": expected_stats["timing_anomaly_rate"],
+        "symbol_accuracy": sequence_result["symbol_accuracy"],
+        "symbol_error_rate": symbol_error_rate,
+        "postselected_count": sequence_result["total_postselected"],
+        "fourfold_count": sequence_result["total_fourfold"],
+        "timing_anomaly_count": sequence_result["total_timing_anomaly"],
+    }
+
+
+def run_single_sweep(params: dict, parameter_name: str, values: list[float], trials: int, state_label: str = "psi1") -> pd.DataFrame:
+    rows = []
+    state_sequence = [state_label] * int(trials)
+
+    for value in values:
+        sweep_params = make_sweep_base_params(params)
+        reset_all_eve(sweep_params)
+
+        if parameter_name == "detector_eta":
+            set_all_channel_loss(sweep_params, 0.05)
+            sweep_params["beam_splitters"]["bs_left"]["loss"] = 0.02
+            sweep_params["beam_splitters"]["bs_right"]["loss"] = 0.02
+            set_all_detector_eta(sweep_params, value)
+
+        elif parameter_name == "channel_loss":
+            set_all_channel_loss(sweep_params, value)
+            set_all_detector_eta(sweep_params, 0.85)
+            sweep_params["beam_splitters"]["bs_left"]["loss"] = 0.02
+            sweep_params["beam_splitters"]["bs_right"]["loss"] = 0.02
+
+        elif parameter_name == "eve_delay_ns":
+            # Ideal detection + one delayed Eve channel: isolates timing effect.
+            set_all_channel_loss(sweep_params, 0.0)
+            set_all_detector_eta(sweep_params, 1.0)
+            sweep_params["beam_splitters"]["bs_left"]["loss"] = 0.0
+            sweep_params["beam_splitters"]["bs_right"]["loss"] = 0.0
+            sweep_params["channels"]["channel_2"]["eve"] = True
+            sweep_params["channels"]["channel_2"]["eve_delay"] = float(value) * 1e-9
+            sweep_params["channels"]["channel_2"]["eve_disturbance"] = 0.0
+            sweep_params["timing"]["coincidence_window"] = 2e-9
+            sweep_params["timing"]["detector_jitter"] = 0.0
+
+        elif parameter_name == "eve_disturbance":
+            # No delay; isolate polarization disturbance effect.
+            set_all_channel_loss(sweep_params, 0.0)
+            set_all_detector_eta(sweep_params, 1.0)
+            sweep_params["beam_splitters"]["bs_left"]["loss"] = 0.0
+            sweep_params["beam_splitters"]["bs_right"]["loss"] = 0.0
+            sweep_params["channels"]["channel_2"]["eve"] = True
+            sweep_params["channels"]["channel_2"]["eve_delay"] = 0.0
+            sweep_params["channels"]["channel_2"]["eve_disturbance"] = float(value)
+            sweep_params["timing"]["detector_jitter"] = 0.0
+
+        else:
+            raise ValueError(f"Unknown sweep parameter: {parameter_name}")
+
+        sequence_result = simulate_state_sequence(state_sequence, sweep_params)
+        rows.append(summarize_sequence_for_sweep(sequence_result, sweep_params, parameter_name, float(value)))
+
+    return pd.DataFrame(rows)
+
+
+def run_parameter_sweeps(params: dict, trials: int = 500, state_label: str = "psi1") -> dict:
+    eta_values = [0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.95, 1.00]
+    loss_values = [0.00, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30]
+    eve_delay_values_ns = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0]
+    eve_disturbance_values = [0.00, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50]
+
+    return {
+        "trials": trials,
+        "state_label": state_label,
+        "eta_sweep": run_single_sweep(params, "detector_eta", eta_values, trials, state_label),
+        "loss_sweep": run_single_sweep(params, "channel_loss", loss_values, trials, state_label),
+        "eve_delay_sweep": run_single_sweep(params, "eve_delay_ns", eve_delay_values_ns, trials, state_label),
+        "eve_disturbance_sweep": run_single_sweep(params, "eve_disturbance", eve_disturbance_values, trials, state_label),
+    }
+
 # ============================================================
 # Display scheme
 # ============================================================
@@ -2851,6 +2974,15 @@ if st.button("Run full simulation"):
 if st.button("Run validation suite"):
     st.session_state.last_validation_result = run_validation_suite(params)
 
+sweep_col_a, sweep_col_b = st.columns([1, 3])
+with sweep_col_a:
+    sweep_trials = st.number_input("Sweep trials per point", min_value=50, max_value=5000, value=500, step=50)
+with sweep_col_b:
+    sweep_state_label = st.selectbox("State for sweeps", ["psi1", "psi2", "psi3", "psi4"], index=0)
+
+if st.button("Run parameter sweeps"):
+    st.session_state.last_sweep_result = run_parameter_sweeps(params, int(sweep_trials), sweep_state_label)
+
 with st.expander("Physics model self-check", expanded=False):
     if st.session_state.last_physics_check_result is None:
         st.info("Click 'Run physics model self-check' to verify the main article-state → PR rotation → x/y-basis measurement path.")
@@ -2895,6 +3027,54 @@ with st.expander("Validation suite", expanded=False):
 
         st.markdown("### Eve delay rejection stats")
         st.json(details["eve_delay_rejection_stats"])
+
+
+with st.expander("Parameter sweeps", expanded=False):
+    if st.session_state.last_sweep_result is None:
+        st.info("Click 'Run parameter sweeps' to build plots for detector efficiency, channel loss, Eve delay, and Eve disturbance.")
+    else:
+        sweep_result = st.session_state.last_sweep_result
+        st.write("Trials per point:", sweep_result["trials"])
+        st.write("State used:", sweep_result["state_label"])
+
+        tab_eta, tab_loss, tab_delay, tab_disturbance = st.tabs([
+            "Detector η",
+            "Channel loss",
+            "Eve delay",
+            "Eve disturbance",
+        ])
+
+        with tab_eta:
+            df = sweep_result["eta_sweep"]
+            st.markdown("### Detector efficiency η → fourfold/postselection rate")
+            st.dataframe(df, use_container_width=True)
+            st.line_chart(
+                df.set_index("parameter")[["expected_fourfold_rate", "observed_fourfold_rate", "observed_postselection_rate"]]
+            )
+
+        with tab_loss:
+            df = sweep_result["loss_sweep"]
+            st.markdown("### Channel loss → fourfold/postselection rate")
+            st.dataframe(df, use_container_width=True)
+            st.line_chart(
+                df.set_index("parameter")[["expected_fourfold_rate", "observed_fourfold_rate", "observed_postselection_rate"]]
+            )
+
+        with tab_delay:
+            df = sweep_result["eve_delay_sweep"]
+            st.markdown("### Eve delay → timing anomaly / postselection")
+            st.dataframe(df, use_container_width=True)
+            st.line_chart(
+                df.set_index("parameter")[["timing_anomaly_rate", "observed_postselection_rate"]]
+            )
+
+        with tab_disturbance:
+            df = sweep_result["eve_disturbance_sweep"]
+            st.markdown("### Eve disturbance → symbol error rate")
+            st.dataframe(df, use_container_width=True)
+            st.line_chart(
+                df.set_index("parameter")[["symbol_error_rate", "symbol_accuracy", "observed_postselection_rate"]]
+            )
 
 with st.expander("Single packet debug view", expanded=False):
     if st.session_state.last_debug_result is None:
